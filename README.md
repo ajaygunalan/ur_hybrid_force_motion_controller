@@ -18,7 +18,7 @@ colcon build --packages-select hybrid_force_motion_controller && source install/
 ## Development Roadmap (build it step by step)
 
 ### Phase 1 — Environment & Teleport Bring-Up (Simulation Test 1)
-Goal: prove the UR5e + dome world, dome teleporter, and end-effector teleporter all work before touching the force-motion code.
+Goal: prove the UR5e + dome world, direct Gazebo CLI dome moves, and end-effector teleporter all work before touching the force-motion code.
 
 1. Launch Gazebo plus the helper stack (URDF + dome + teleporter nodes) in one shot:
    ```bash
@@ -26,18 +26,12 @@ Goal: prove the UR5e + dome world, dome teleporter, and end-effector teleporter 
      ur_type:=ur5e
    ```
    The launch file includes `ur_simulation_gz/ur_sim_control.launch.py` with the packaged `worlds/contact_dome.sdf`.
-2. Move the red hemispherical dome (initially at `x=0.5 m`) relative to `base_link` from another terminal:
+2. Move the red hemispherical dome (initially at `x=0.5 m`) directly through Gazebo’s CLI service (no helper script required). From a second terminal run:
    ```bash
-   ros2 run hybrid_force_motion_controller dome_teleporter.py \
-     --x 0.55 --y 0.15 --z 0.07 --frame base_link --world ur_world
+   gz service -s /world/contact_dome/set_pose --reqtype gz.msgs.Pose --reptype gz.msgs.Boolean --req 'name: "contact_dome", position: { x: 0.55, y: 0.15, z: 0.07 }, orientation: { x: 0, y: 0, z: 0, w: 1 }'
    ```
-   - Use `--waypoints path/to/file.yaml` to replay multiple locations (`[{x:...,y:...,z:...,frame:...}, ...]`).
-     Example waypoint file:
-     ```yaml
-     - {x: 0.55, y: 0.10, z: 0.07, frame: base_link}
-     - {x: 0.45, y: -0.05, z: 0.08, frame: base_link}
-     ```
-   - `--entity-name` lets you target a different Gazebo model if needed.
+   - Replace the position/orientation block with the desired `world`-frame pose for the dome. (`gz service -l | grep set_pose` confirms the service name if you change worlds; the CLI syntax above matches the official Gazebo examples for `/world/<world>/set_pose`.)
+   - If you only know the offset relative to `base_link`, grab the current transform via `ros2 run tf2_ros tf2_echo base_link world`, add the offset, and send the summed `world` coordinates.
 3. Snap the robot TCP onto the dome using IK:
    ```bash
    ros2 service call /hybrid_force_motion_controller/teleport_tool \
@@ -49,7 +43,7 @@ Goal: prove the UR5e + dome world, dome teleporter, and end-effector teleporter 
 4. Test criteria (no controller yet):
    - Dome pose updates immediately in RViz/Gazebo when the teleporter runs.
    - Teleporting the tool puts the TCP exactly where requested (confirm via TF and `ros2 topic echo /joint_states`).
-   - You can iterate “teleport dome → teleport TCP” for all planned waypoints without restarting Gazebo.
+   - You can iterate “teleport dome → teleport TCP” for all planned target poses without restarting Gazebo.
 
 Only after Test 1 is green do we proceed to Phase 2.
 
@@ -81,7 +75,7 @@ Only after Test 1 is green do we proceed to Phase 2.
 | Service | `/hybrid_force_motion_controller/start_motion` | Arms RUNNING once engage force is met. |
 | Service | `/hybrid_force_motion_controller/pause_motion` / `/resume_motion` | Hold/continue the tangential slide without losing progress. |
 | Service | `/hybrid_force_motion_controller/stop_motion` | Enters ABORTED; requires `set_start_pose` before another run. |
-| Service | `/hybrid_force_motion_controller/teleport_tool` (sim only) | IK-based snap-to-contact helper used alongside the dome teleporter. |
+| Service | `/hybrid_force_motion_controller/teleport_tool` (sim only) | IK-based snap-to-contact helper used alongside the Gazebo CLI dome pose updates. |
 | Topic | `/hybrid_force_motion_controller/state` | Finite-state-machine status, tangential progress, PI error, fault flags. |
 | Topic | `/hybrid_force_motion_controller/direction` (`geometry_msgs/Vector3`, optional) | Live override for tangential direction hint. |
 | TF | `contact_frame` | Published each control cycle for RViz verification (normal = Z-axis). |

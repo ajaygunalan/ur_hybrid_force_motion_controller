@@ -16,17 +16,17 @@
 3. **Runtime nodes**
    - `wrench_node` (from `ur_admittance_controller`) publishes `/netft/proc_probe`.
    - `hybrid_force_motion_node` subscribes to `/netft/proc_probe`, `/joint_states`, TF, and optional `/hybrid_force_motion_controller/direction`; publishes `/forward_velocity_controller/commands`, `tf` contact frame, and a diagnostic topic `/hybrid_force_motion_controller/state`.
-   - Simulation-only helpers: `dome_teleporter` (Gazebo entity state client) and `ee_teleporter` (IK solver that snaps the arm pose).
+   - Simulation-only helper: `ee_teleporter` (IK solver that snaps the arm pose). Dome repositioning is handled directly through `gz service /world/<world>/set_pose` commands documented in the README.
 
 ## 3. Implementation Phases & Tests (Build Pipeline)
 1. **Phase 1 — Environment & Teleport Bring-Up**
    - Deliverables:
      - Gazebo world file `worlds/contact_dome.sdf` bundled with `teleport_bringup.launch.py`, which includes `ur_simulation_gz/ur_sim_control.launch.py` so URDF + dome spawn together.
-     - `scripts/dome_teleporter.py` CLI/node that adjusts the dome pose at runtime through `/gazebo/set_entity_state`, accepting raw CLI params or a waypoint YAML (A, B, C… positions).
+     - Command-line recipe (`gz service -s /world/<world>/set_pose ...`) for moving the dome instantly during simulation bring-up—no ROS node required.
      - `scripts/ee_teleporter.py` service that solves IK (using the URDF / KDL chain shared with `ur_admittance_controller`) and calls `/set_model_configuration` so the robot snaps into contact—no controller required yet.
    - Test 1 checklist:
      1. `ros2 launch ur_simulation_gz ur_sim_control.launch.py ...` brings up the URDF+world without errors; dome is visible in RViz/Gazebo.
-     2. Running the `dome_teleporter` command updates the dome pose, confirmed via RViz TF or Gazebo GUI.
+     2. Calling `gz service -s /world/contact_dome/set_pose ...` updates the dome pose, confirmed via RViz TF or Gazebo GUI.
      3. Calling `/hybrid_force_motion_controller/teleport_tool` places the tool exactly at the requested base pose (verified by TF and joint state echo).
      4. No hybrid controller running yet; success = manual/teleport contact achieved repeatedly.
 2. **Phase 2 — Hybrid Force/Motion Control**
@@ -38,7 +38,7 @@
      2. Observe the normal soft-start ramp (force ramps smoothly to 5 N), TF contact frame aligns with the dome, and tangential displacement halts at 0.05 m.
      3. Drop the force below threshold to confirm the contact-loss detector trips FAULT and zeroes commands; `set_start_pose` recovers.
      4. Exercise pause/resume/stop services and ensure diagnostics reflect the correct state transitions.
-3. **Future phases (scoped but not yet scheduled)** — null-space orientation optimizer, automated waypoint sequencer, additional hardware soak tests. These inherit from the first two phases but are not required before initial delivery.
+3. **Future phases (scoped but not yet scheduled)** — null-space orientation optimizer, automated pose sequencer, additional hardware soak tests. These inherit from the first two phases but are not required before initial delivery.
 
 This phased approach keeps the build linear: Phase 1 must pass before Phase 2 starts, mirroring the methodology used in `ur_admittance_controller` (URDF bring-up → wrench pipeline → controller).
 
@@ -67,9 +67,13 @@ This phased approach keeps the build linear: Phase 1 must pass before Phase 
 - **TF publication** — broadcast `contact_frame` (origin at tool, axes `[\hat{t}, \hat{n}_\text{surf}, \hat{b}]`) so RViz can show the live normal/tangent and confirm teleport accuracy.
 
 ### 4.4 Simulation Convenience Workflow
-- **Dome teleporter** — node/CLI that wraps Gazebo’s `/set_entity_state` to place the hemisphere relative to `base_link` (x/y/z plus optional RPY). Accepts YAML/JSON waypoint files so you can iterate through A→B→C quickly.
-- **End-effector teleporter** — uses the same KDL chain to compute joint positions for a requested base pose, publishes to Gazebo’s joint state interface (or a dedicated service) to “snap” the robot. No trajectories, so it stays a simulation-only helper.
-- After each teleport, call `set_start_pose`, then proceed with the hybrid controller; hardware users simply jog before calling the same service.
+- **Dome repositioning** — use Gazebo Sim’s native CLI to set the model pose without launching any extra nodes:
+  ```
+  gz service -s /world/contact_dome/set_pose --reqtype gz.msgs.Pose --reptype gz.msgs.Boolean --req 'name: "contact_dome", position: { x: X, y: Y, z: Z }, orientation: { x: 0, y: 0, z: 0, w: 1 }'
+  ```
+  Replace the pose block as needed; everything is expressed in the `world` frame and follows the `gz.msgs.Pose` layout described in Gazebo’s CLI examples.
+- **End-effector teleporter** — uses the shared KDL chain to compute joint positions for a requested base pose, publishes to Gazebo’s joint state interface (or a dedicated service) to “snap” the robot. No trajectories, so it stays a simulation-only helper.
+- After each teleport or CLI pose change, call `set_start_pose`, then proceed with the hybrid controller; hardware users simply jog before calling the same service.
 
 ## 5. Validation & Delivery Checklist
 1. **Unit tests** — gtests for:
@@ -79,6 +83,6 @@ This phased approach keeps the build linear: Phase 1 must pass before Phase 
 2. **Integration tests** — launch test in Gazebo headless mode with scripted dome/teleport moves, ensuring contact frame TFs, services, and PI loop behave as expected.
 3. **Manual verification** — document RViz overlays (TF contact frame), topic commands, and service sequences in README.
 4. **Documentation** — keep README focused on operator workflow (setup, services, sim vs. hardware). Reference this `plan.md` for design details and `reference/friction_normal_estimator.md` for estimator theory.
-5. **Future enhancements (tracked but out of scope for initial delivery)** — null-space orientation optimization (align tool axis with estimated normal), automated waypoint sequencer, deeper comparison to literature.
+5. **Future enhancements (tracked but out of scope for initial delivery)** — null-space orientation optimization (align tool axis with estimated normal), automated pose sequencer, deeper comparison to literature.
 
 This structure keeps the plan hierarchical (objectives → architecture → detailed design → validation) while avoiding duplication with README, which remains an operator-facing guide.
