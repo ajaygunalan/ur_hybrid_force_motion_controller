@@ -12,7 +12,8 @@ def generate_launch_description():
     hfmc_pkg = get_package_share_directory('hybrid_force_motion_controller')
 
     ur_type_arg = DeclareLaunchArgument('ur_type', default_value='ur5e')
-    world_path = os.path.join(hfmc_pkg, 'worlds', 'contact_dome.sdf')
+    world_name = 'contact_dome'
+    world_path = os.path.join(hfmc_pkg, 'worlds', f'{world_name}.sdf')
 
     existing_resource_path = os.environ.get('IGN_GAZEBO_RESOURCE_PATH', '')
     new_resource_path = hfmc_pkg if not existing_resource_path else f"{hfmc_pkg}:{existing_resource_path}"
@@ -26,20 +27,18 @@ def generate_launch_description():
             'world_file': world_path,
         }.items())
 
-    ee_teleporter = Node(
-        package='hybrid_force_motion_controller',
-        executable='ee_teleporter.py',
+    service_bridge = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
         output='screen',
-        parameters=[{
-            'model_name': 'ur5e',
-            'base_frame': 'base_link',
-            'tool_frame': 'tool0',
-        }])
+        arguments=[
+            f'/world/{world_name}/set_entity_pose@ros_gz_interfaces/srv/SetEntityPose',
+        ])
 
     return LaunchDescription([
         ur_type_arg,
         SetEnvironmentVariable('IGN_GAZEBO_RESOURCE_PATH', new_resource_path),
         SetEnvironmentVariable('GZ_SIM_RESOURCE_PATH', new_gz_path),
         ur_launch,
-        ee_teleporter,
+        service_bridge,
     ])

@@ -10,29 +10,29 @@
    - `include/hybrid_force_motion_controller/` — main node + helper classes (parameters, state machine, Jacobian utilities).
    - `src/hybrid_force_motion_node.cpp` — executes the control loop, TF logic, operator services.
    - `config/hybrid_force_motion_config.yaml` — gains (normal PI with soft-start, tangential P), limits, thresholds, frame names.
-   - `launch/hybrid_force_motion_sim.launch.py` / `hybrid_force_motion_hw.launch.py` — orchestrate sim/hardware stacks, including convenience teleport nodes when in sim.
+   - `launch/hybrid_force_motion_sim.launch.py` / `hybrid_force_motion_hw.launch.py` — orchestrate sim/hardware stacks; simulation relies on CLI helpers (`gz set_pose` + `/scaled_joint_trajectory_controller/joint_trajectory` publish) instead of extra teleport nodes.
    - `reference/friction_normal_estimator.md` — keeps the friction-aware normal math (migrated from `Untitled.md`).
 2. **External dependencies** — `rclcpp`, `rclcpp_components`, `geometry_msgs`, `sensor_msgs`, `std_msgs`, `std_srvs`, `tf2_ros`, `tf2_geometry_msgs`, `tf2_eigen`, `Eigen3`, `kdl_parser`, `urdfdom`, and direct include access to `ur_admittance_controller` headers for shared constants.
 3. **Runtime nodes**
    - `wrench_node` (from `ur_admittance_controller`) publishes `/netft/proc_probe`.
    - `hybrid_force_motion_node` subscribes to `/netft/proc_probe`, `/joint_states`, TF, and optional `/hybrid_force_motion_controller/direction`; publishes `/forward_velocity_controller/commands`, `tf` contact frame, and a diagnostic topic `/hybrid_force_motion_controller/state`.
-   - Simulation-only helper: `ee_teleporter` (IK solver that snaps the arm pose). Dome repositioning is handled directly through `gz service /world/<world>/set_pose` commands documented in the README.
+   - Simulation helpers: CLI commands only (`gz service /world/<world>/set_pose` for the dome and `ros2 topic pub --once /scaled_joint_trajectory_controller/joint_trajectory ...` for joint presets). No dedicated teleporter nodes remain.
 
 ## 3. Implementation Phases & Tests (Build Pipeline)
 1. **Phase 1 — Environment & Teleport Bring-Up**
    - Deliverables:
      - Gazebo world file `worlds/contact_dome.sdf` bundled with `teleport_bringup.launch.py`, which includes `ur_simulation_gz/ur_sim_control.launch.py` so URDF + dome spawn together.
      - Command-line recipe (`gz service -s /world/<world>/set_pose ...`) for moving the dome instantly during simulation bring-up—no ROS node required.
-     - `scripts/ee_teleporter.py` service that solves IK (using the URDF / KDL chain shared with `ur_admittance_controller`) and calls `/set_model_configuration` so the robot snaps into contact—no controller required yet.
+     - Copy/paste command for `ros2 topic pub --once /scaled_joint_trajectory_controller/joint_trajectory ...` so the UR arm can be snapped into contact by editing joint angles inline (no runtime IK).
    - Test 1 checklist:
      1. `ros2 launch ur_simulation_gz ur_sim_control.launch.py ...` brings up the URDF+world without errors; dome is visible in RViz/Gazebo.
      2. Calling `gz service -s /world/contact_dome/set_pose ...` updates the dome pose, confirmed via RViz TF or Gazebo GUI.
-     3. Calling `/hybrid_force_motion_controller/teleport_tool` places the tool exactly at the requested base pose (verified by TF and joint state echo).
+     3. Publishing to `/scaled_joint_trajectory_controller/joint_trajectory` places the arm exactly at the requested joint pose (verified by TF and joint state echo).
      4. No hybrid controller running yet; success = manual/teleport contact achieved repeatedly.
 2. **Phase 2 — Hybrid Force/Motion Control**
    - Deliverables:
      - Full controller node with PI soft-start normal regulation, tangential displacement tracking, friction-aware normal estimator, contact frame TF publication, and the state-machine services.
-     - Contact-loss detector and FAULT handling tied into the teleporter workflow (i.e., after teleporting you must call `set_start_pose` before `start_motion`).
+     - Contact-loss detector and FAULT handling tied into the teleport workflow (after snapping joints you still call `set_start_pose` before `start_motion`).
    - Test 2 checklist:
      1. With Phase 1 environment running, call `set_start_pose` followed by `start_motion`; verify RUNNING begins only after engage force threshold is exceeded.
      2. Observe the normal soft-start ramp (force ramps smoothly to 5 N), TF contact frame aligns with the dome, and tangential displacement halts at 0.05 m.
@@ -57,7 +57,7 @@ This phased approach keeps the build linear: Phase 1 must pass before Phase 
 - Services (all `std_srvs/Trigger`):
   - `/hybrid_force_motion_controller/set_start_pose` — capture TF pose, wrench snapshot, zero integrators, transition to `READY` (replaces `init_robot`).
   - `/start_motion`, `/pause_motion`, `/resume_motion`, `/stop_motion` — drive state transitions. `stop_motion` enters `ABORTED`.
-  - `/teleport_tool` (sim only, custom srv) — accept a base-frame pose, solve IK, and set joint states instantly for point-to-point contact presets.
+  - `/scaled_joint_trajectory_controller/joint_trajectory` (sim) — command topic used to drop the UR arm joints into a preset pose before the controller takes over.
 - Diagnostic topic `/hybrid_force_motion_controller/state` publishes current state, tangential progress, normal force, and error flags for logging/monitoring.
 
 ### 4.3 Safety, Faults, and Contact Management
@@ -72,8 +72,8 @@ This phased approach keeps the build linear: Phase 1 must pass before Phase 
   gz service -s /world/contact_dome/set_pose --reqtype gz.msgs.Pose --reptype gz.msgs.Boolean --req 'name: "contact_dome", position: { x: X, y: Y, z: Z }, orientation: { x: 0, y: 0, z: 0, w: 1 }'
   ```
   Replace the pose block as needed; everything is expressed in the `world` frame and follows the `gz.msgs.Pose` layout described in Gazebo’s CLI examples.
-- **End-effector teleporter** — uses the shared KDL chain to compute joint positions for a requested base pose, publishes to Gazebo’s joint state interface (or a dedicated service) to “snap” the robot. No trajectories, so it stays a simulation-only helper.
-- After each teleport or CLI pose change, call `set_start_pose`, then proceed with the hybrid controller; hardware users simply jog before calling the same service.
+- **Arm repositioning** — publish a one-shot `JointTrajectory` message to `/scaled_joint_trajectory_controller/joint_trajectory` with the desired joint list/positions. Edit the `positions` array inline for each pose you need.
+- After moving the dome and snapping the joints, call `set_start_pose`, then proceed with the hybrid controller; hardware users simply jog before calling the same service.
 
 ## 5. Validation & Delivery Checklist
 1. **Unit tests** — gtests for:

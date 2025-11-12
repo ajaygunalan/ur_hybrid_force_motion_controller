@@ -18,7 +18,7 @@ colcon build --packages-select hybrid_force_motion_controller && source install/
 ## Development Roadmap (build it step by step)
 
 ### Phase 1 — Environment & Teleport Bring-Up (Simulation Test 1)
-Goal: prove the UR5e + dome world, direct Gazebo CLI dome moves, and end-effector teleporter all work before touching the force-motion code.
+Goal: prove the UR5e + dome world, direct Gazebo CLI dome moves, and joint-trajectory snap-to poses all work before touching the force-motion code.
 
 1. Launch Gazebo plus the helper stack (URDF + dome + teleporter nodes) in one shot:
    ```bash
@@ -26,21 +26,22 @@ Goal: prove the UR5e + dome world, direct Gazebo CLI dome moves, and end-effecto
      ur_type:=ur5e
    ```
    The launch file includes `ur_simulation_gz/ur_sim_control.launch.py` with the packaged `worlds/contact_dome.sdf`.
-2. Move the red hemispherical dome (initially at `x=0.5 m`) directly through Gazebo’s CLI service (no helper script required). From a second terminal run:
+2. Move the red hemispherical dome (initial spawn at `x=0.55 m, y=0.135 m`) directly through Gazebo’s CLI service (no helper script required). From a second terminal run:
    ```bash
-   gz service -s /world/contact_dome/set_pose --reqtype gz.msgs.Pose --reptype gz.msgs.Boolean --req 'name: "contact_dome", position: { x: 0.55, y: 0.15, z: 0.07 }, orientation: { x: 0, y: 0, z: 0, w: 1 }'
+   gz service -s /world/contact_dome/set_pose --reqtype gz.msgs.Pose --reptype gz.msgs.Boolean --req 'name: "contact_dome", position: { x: 0.55, y: 0.135, z: 0.00 }, orientation: { x: 0, y: 0, z: 0, w: 1 }'
    ```
    - Replace the position/orientation block with the desired `world`-frame pose for the dome. (`gz service -l | grep set_pose` confirms the service name if you change worlds; the CLI syntax above matches the official Gazebo examples for `/world/<world>/set_pose`.)
    - If you only know the offset relative to `base_link`, grab the current transform via `ros2 run tf2_ros tf2_echo base_link world`, add the offset, and send the summed `world` coordinates.
-3. Snap the robot TCP onto the dome using IK:
+3. Snap the UR arm joints by publishing a single trajectory point (edit the joint values inline each time you need a new pose):
    ```bash
-   ros2 service call /hybrid_force_motion_controller/teleport_tool \
-     hybrid_force_motion_controller/srv/TeleportTool \
-     "{pose: {position: {x: 0.55, y: 0.15, z: 0.12}, \
-             orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}, \
-       base_frame: base_link}"
+   ros2 topic pub --once /scaled_joint_trajectory_controller/joint_trajectory \
+     trajectory_msgs/msg/JointTrajectory \
+     "{joint_names: ['shoulder_pan_joint','shoulder_lift_joint','elbow_joint', \
+                     'wrist_1_joint','wrist_2_joint','wrist_3_joint'], \
+       points: [{positions: [0.0, -1.3, 1.7, -1.9, -1.57, 0.0], \
+                 time_from_start: {sec: 5, nanosec: 0}}]}"
    ```
-   *(ROS 2 always requires both the service name and type; the line above includes the full `hybrid_force_motion_controller/srv/TeleportTool` spec so you can copy/paste it.)*
+   *(Edit the `positions` array before each call; the controller drives the joints straight to those angles.)*
 4. Test criteria (no controller yet):
    - Dome pose updates immediately in RViz/Gazebo when the teleporter runs.
    - Teleporting the tool puts the TCP exactly where requested (confirm via TF and `ros2 topic echo /joint_states`).
@@ -76,7 +77,7 @@ Only after Test 1 is green do we proceed to Phase 2.
 | Service | `/hybrid_force_motion_controller/start_motion` | Arms RUNNING once engage force is met. |
 | Service | `/hybrid_force_motion_controller/pause_motion` / `/resume_motion` | Hold/continue the tangential slide without losing progress. |
 | Service | `/hybrid_force_motion_controller/stop_motion` | Enters ABORTED; requires `set_start_pose` before another run. |
-| Service | `/hybrid_force_motion_controller/teleport_tool` (sim only) | IK-based snap-to-contact helper used alongside the Gazebo CLI dome pose updates. |
+| Topic | `/scaled_joint_trajectory_controller/joint_trajectory` | Publish a one-shot joint array to “teleport” the UR arm before running the controller. |
 | Topic | `/hybrid_force_motion_controller/state` | Finite-state-machine status, tangential progress, PI error, fault flags. |
 | Topic | `/hybrid_force_motion_controller/direction` (`geometry_msgs/Vector3`, optional) | Live override for tangential direction hint. |
 | TF | `contact_frame` | Published each control cycle for RViz verification (normal = Z-axis). |

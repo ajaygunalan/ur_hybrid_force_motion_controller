@@ -8,21 +8,22 @@ Use this checklist after building the workspace (`colcon build --packages-select
    ```
 2. **Move the dome** (repeat for each pose as needed) using Gazebo’s CLI service:
    ```bash
-   gz service -s /world/contact_dome/set_pose --reqtype gz.msgs.Pose --reptype gz.msgs.Boolean --req 'name: "contact_dome", position: { x: 0.55, y: 0.15, z: 0.07 }, orientation: { x: 0, y: 0, z: 0, w: 1 }'
+   gz service -s /world/contact_dome/set_pose --reqtype gz.msgs.Pose --reptype gz.msgs.Boolean --req 'name: "contact_dome", position: { x: 0.55, y: 0.135, z: 0.00 }, orientation: { x: 0, y: 0, z: 0, w: 1 }'
    ```
    *Tip*: run `gz service -l | grep set_pose` first if you’re unsure about the world name, and only edit the pose coordinates/orientation (they’re expressed in the `world` frame).
-3. **Teleport the TCP via IK** (match the dome pose):
+3. **Snap the UR arm joints** (edit values inline as needed):
    ```bash
-   ros2 service call /hybrid_force_motion_controller/teleport_tool \
-     hybrid_force_motion_controller/srv/TeleportTool \
-     "{pose: {position: {x: 0.55, y: 0.15, z: 0.12}, \
-              orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}, \
-       base_frame: base_link}"
+   ros2 topic pub --once /scaled_joint_trajectory_controller/joint_trajectory \
+     trajectory_msgs/msg/JointTrajectory \
+     "{joint_names: ['shoulder_pan_joint','shoulder_lift_joint','elbow_joint', \
+                     'wrist_1_joint','wrist_2_joint','wrist_3_joint'], \
+       points: [{positions: [0.0, -1.3, 1.7, -1.9, -1.57, 0.0], \
+                 time_from_start: {sec: 5, nanosec: 0}}]}"
    ```
-   *(Don’t omit the service type—`hybrid_force_motion_controller/srv/TeleportTool` is required for ROS 2 to accept the command.)*
+   *Update the `positions` array each time you want a new pose; the controller immediately drives the joints to those angles.*
 4. **Validate**
    - RViz/Gazebo show the dome and TCP moving instantly to each target.
-   - `ros2 topic echo /joint_states` matches the expected joint configurations.
+   - `ros2 topic echo /joint_states` matches the joint values you just sent.
    - TF `contact_dome` and `tool0` frames align at each commanded pose.
 
 Mark **Test 1** as PASS in `agents.md` once the above steps succeed without restarting Gazebo.

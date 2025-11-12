@@ -44,7 +44,7 @@
 
     <model name="contact_dome">
       <static>true</static>
-      <pose>0.5 0 0.045 0 0 0</pose>
+      <pose>0.55 0.135 0 0 0 0</pose>
       <link name="dome_link">
         <visual name="visual">
           <geometry>

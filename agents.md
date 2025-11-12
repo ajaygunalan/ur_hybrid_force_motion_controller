@@ -3,7 +3,7 @@
 ## Phase Tracker
 | Phase | Scope | Key Assets | Test ID | Status | Notes |
 |-------|-------|------------|---------|--------|-------|
-| 1 | Environment + teleport bring-up (sim only) | `worlds/contact_dome.sdf`, `teleport_bringup.launch.py`, `gz service /world/contact_dome/set_pose`, `scripts/ee_teleporter.py` | Test 1 | Pending | Verify direct CLI dome moves + IK snap before enabling controller. See README Phase 1 for commands. |
+| 1 | Environment + teleport bring-up (sim only) | `worlds/contact_dome.sdf`, `teleport_bringup.launch.py`, `gz service /world/contact_dome/set_pose`, `/scaled_joint_trajectory_controller/joint_trajectory` CLI | Test 1 | Pending | Verify dome pose + joint preset commands before enabling the controller. See README Phase 1 for commands. |
 | 2 | Hybrid force-motion controller (sim + hw) | controller node, PI loop, services | Test 2 | Not started | Blocked on Phase 1 completion. |
 
 ## Test Notes

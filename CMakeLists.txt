@@ -21,11 +21,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
 ament_export_dependencies(rosidl_default_runtime)
 
-install(PROGRAMS
-  scripts/dome_teleporter.py
-  scripts/ee_teleporter.py
-  DESTINATION lib/${PROJECT_NAME})
-
 install(DIRECTORY launch worlds reference meshes
   DESTINATION share/${PROJECT_NAME}
   USE_SOURCE_PERMISSIONS)
