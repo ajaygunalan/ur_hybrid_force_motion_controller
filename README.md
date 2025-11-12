@@ -58,12 +58,12 @@ Only after Test 1 is green do we proceed to Phase 2.
    ```bash
    ros2 run hybrid_force_motion_controller hybrid_force_motion_node
    ```
-2. With the tool in contact (teleported in sim, jogged on hardware), run:
+2. With the tool in contact, start the hybrid force-motion loop:
    ```bash
    ros2 service call /hybrid_force_motion_controller/set_start_pose std_srvs/srv/Trigger {}
    ros2 service call /hybrid_force_motion_controller/start_motion std_srvs/srv/Trigger {}
    ```
-   The controller soft-starts the normal force (0→5 N over ~0.7 s), then performs the 5 cm tangential slide. `pause_motion`, `resume_motion`, and `stop_motion` remain available at any time.
+   The controller first drives +Z until ~5 N normal force is reached (using the wrench data from `ur_admittance_controller`), then performs the 5 cm tangential slide. Use `pause_motion` / `resume_motion` to hold/approve the contact before sliding if needed; see `phase_two_test.md` for the full contact→approval→slide workflow.
 3. Test criteria:
    - `/hybrid_force_motion_controller/state` shows `RUNNING`, then `COMPLETED` at 5 cm of progress; `/forward_velocity_controller/commands` stays bounded.
    - TF `contact_frame` aligns with the dome normal; `/netft/proc_probe` reports ~5 N steady-state.
@@ -73,7 +73,7 @@ Only after Test 1 is green do we proceed to Phase 2.
 ## Operator Interfaces
 | Type   | Name | Notes |
 |--------|------|-------|
-| Service | `/hybrid_force_motion_controller/set_start_pose` (`std_srvs/Trigger`) | Captures current TF pose & wrench, zeros integrators, transitions to READY (supersedes `init_robot`). |
+| Service | `/hybrid_force_motion_controller/set_start_pose` (`std_srvs/Trigger`) | Captures current TF pose & wrench, zeros integrators, transitions to READY prior to the contact press. |
 | Service | `/hybrid_force_motion_controller/start_motion` | Arms RUNNING once engage force is met. |
 | Service | `/hybrid_force_motion_controller/pause_motion` / `/resume_motion` | Hold/continue the tangential slide without losing progress. |
 | Service | `/hybrid_force_motion_controller/stop_motion` | Enters ABORTED; requires `set_start_pose` before another run. |
