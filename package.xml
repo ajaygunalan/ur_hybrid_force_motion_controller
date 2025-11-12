@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>hybrid_force_motion_controller</name>
+  <version>0.1.0</version>
+  <description>Hybrid force-motion controller stack with simulation teleporter utilities.</description>
+  <maintainer email="ajay@example.com">Ajay</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <build_depend>rosidl_default_generators</build_depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>rclpy</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>ros_gz_interfaces</depend>
+  <depend>kdl_parser_py</depend>
+  <depend>urdf_parser_py</depend>
+  <depend>python3-pykdl</depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
