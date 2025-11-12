@@ -19,6 +19,7 @@ Use this checklist after building the workspace (`colcon build --packages-select
               orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}, \
        base_frame: base_link}"
    ```
+   *(Don’t omit the service type—`hybrid_force_motion_controller/srv/TeleportTool` is required for ROS 2 to accept the command.)*
 4. **Validate**
    - RViz/Gazebo show the dome and TCP moving instantly to each target.
    - `ros2 topic echo /joint_states` matches the expected joint configurations.

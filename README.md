@@ -40,6 +40,7 @@ Goal: prove the UR5e + dome world, direct Gazebo CLI dome moves, and end-effecto
              orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}, \
        base_frame: base_link}"
    ```
+   *(ROS 2 always requires both the service name and type; the line above includes the full `hybrid_force_motion_controller/srv/TeleportTool` spec so you can copy/paste it.)*
 4. Test criteria (no controller yet):
    - Dome pose updates immediately in RViz/Gazebo when the teleporter runs.
    - Teleporting the tool puts the TCP exactly where requested (confirm via TF and `ros2 topic echo /joint_states`).
