@@ -15,61 +15,10 @@ rosdep install --from-paths src --ignore-src -r -y
 colcon build --packages-select hybrid_force_motion_controller && source install/setup.bash
 ```
 
-## Development Roadmap (build it step by step)
-
-### Phase 1 — Environment & Teleport Bring-Up (Simulation Test 1)
-Goal: prove the UR5e + dome world, direct Gazebo CLI dome moves, and joint-trajectory snap-to poses all work before touching the force-motion code.
-
-1. Launch Gazebo plus the helper stack (URDF + dome + teleporter nodes) in one shot:
-   ```bash
-   ros2 launch hybrid_force_motion_controller teleport_bringup.launch.py \
-     ur_type:=ur5e
-   ```
-   The launch file includes `ur_simulation_gz/ur_sim_control.launch.py` with the packaged `worlds/contact_dome.sdf`.
-2. Move the red hemispherical dome (initial spawn at `x=0.55 m, y=0.135 m`) directly through Gazebo’s CLI service (no helper script required). From a second terminal run:
-   ```bash
-   gz service -s /world/contact_dome/set_pose --reqtype gz.msgs.Pose --reptype gz.msgs.Boolean --req 'name: "contact_dome", position: { x: 0.55, y: 0.135, z: 0.00 }, orientation: { x: 0, y: 0, z: 0, w: 1 }'
-   ```
-   - Replace the position/orientation block with the desired `world`-frame pose for the dome. (`gz service -l | grep set_pose` confirms the service name if you change worlds; the CLI syntax above matches the official Gazebo examples for `/world/<world>/set_pose`.)
-   - If you only know the offset relative to `base_link`, grab the current transform via `ros2 run tf2_ros tf2_echo base_link world`, add the offset, and send the summed `world` coordinates.
-3. Snap the UR arm joints by publishing a single trajectory point (edit the joint values inline each time you need a new pose):
-   ```bash
-   ros2 topic pub --once /scaled_joint_trajectory_controller/joint_trajectory \
-     trajectory_msgs/msg/JointTrajectory \
-     "{joint_names: ['shoulder_pan_joint','shoulder_lift_joint','elbow_joint', \
-                     'wrist_1_joint','wrist_2_joint','wrist_3_joint'], \
-       points: [{positions: [0.0, -1.3, 1.7, -1.9, -1.57, 0.0], \
-                 time_from_start: {sec: 5, nanosec: 0}}]}"
-   ```
-   *(Edit the `positions` array before each call; the controller drives the joints straight to those angles.)*
-4. Test criteria (no controller yet):
-   - Dome pose updates immediately in RViz/Gazebo when the teleporter runs.
-   - Teleporting the tool puts the TCP exactly where requested (confirm via TF and `ros2 topic echo /joint_states`).
-   - You can iterate “teleport dome → teleport TCP” for all planned target poses without restarting Gazebo.
-
-Only after Test 1 is green do we proceed to Phase 2.
-
-### Phase 2 — Hybrid Force-Motion Loop (Simulation Test 2 + Hardware)
-1. Launch the full stack (Gazebo, teleport helpers, wrench pipeline, and controller):
-   ```bash
-   ros2 launch hybrid_force_motion_controller hybrid_force_motion_sim.launch.py
-   ```
-   Hardware mirrors the same steps except you jog manually (per `ur_admittance_controller/README.md`) and start the node with:
-   ```bash
-   ros2 run hybrid_force_motion_controller hybrid_force_motion_node
-   ```
-2. With the tool in contact, start the hybrid force-motion loop:
-   ```bash
-   ros2 service call /hybrid_force_motion_controller/set_start_pose std_srvs/srv/Trigger {}
-   ros2 service call /hybrid_force_motion_controller/start_motion std_srvs/srv/Trigger {}
-   ```
-   The controller first drives +Z until ~5 N normal force is reached (using the wrench data from `ur_admittance_controller`), then performs the 5 cm tangential slide. Use `pause_motion` / `resume_motion` to hold/approve the contact before sliding if needed; see `phase_two_test.md` for the full contact→approval→slide workflow.
-3. Test criteria:
-   - `/hybrid_force_motion_controller/state` shows `RUNNING`, then `COMPLETED` at 5 cm of progress; `/forward_velocity_controller/commands` stays bounded.
-   - TF `contact_frame` aligns with the dome normal; `/netft/proc_probe` reports ~5 N steady-state.
-   - Forcing `(F·n̂)` below the disengage threshold trips `FAULT` (contact lost), zeros commands, and requires a fresh `set_start_pose`.
-   - Services behave identically on hardware once you substitute manual jogging for teleporting.
-
+## Quick Navigation
+- **Phase 1 – Teleport Bring-Up:** see `phase_one_test.md`.
+- **Phase 2 – Hybrid Force-Motion Loop:** see `phase_two_test.md`.
+- **Plan/architecture:** see `plan.md`.
 ## Operator Interfaces
 | Type   | Name | Notes |
 |--------|------|-------|

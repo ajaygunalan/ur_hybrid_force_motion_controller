@@ -26,17 +26,5 @@ Use this checklist after building the workspace (`colcon build --packages-select
    - `ros2 topic echo /joint_states` matches the joint values you just sent.
    - TF `contact_dome` and `tool0` frames align at each commanded pose.
 
-**Phase 2 quick reference (simulation):**
-1. Ensure the dome/joint commands above are applied so the robot is in contact.
-2. Initialize the admittance controller equilibrium file once:
-   ```bash
-   ros2 run ur_admittance_controller init_robot
-   ```
-3. Start the hybrid controller:
-   ```bash
-   ros2 service call /hybrid_force_motion_controller/set_start_pose std_srvs/srv/Trigger {}
-   ros2 service call /hybrid_force_motion_controller/start_motion std_srvs/srv/Trigger {}
-   ```
-   The controller soft-starts to 5 N, performs the 5 cm slide, and you can pause/resume/stop via the other services as needed.
 
 Mark **Test 1** as PASS in `agents.md` once the above steps succeed without restarting Gazebo.
