@@ -44,6 +44,13 @@ def generate_launch_description():
         output='screen',
         parameters=[controller_cfg])
 
+    velocity_node = Node(
+        package='hybrid_force_motion_controller',
+        executable='cartesian_velocity_controller_node',
+        name='cartesian_velocity_controller',
+        output='screen',
+        parameters=[controller_cfg])
+
     return LaunchDescription([
         ur_type_arg,
         SetEnvironmentVariable('IGN_GAZEBO_RESOURCE_PATH', new_resource_path),
@@ -51,4 +58,5 @@ def generate_launch_description():
         ur_launch,
         service_bridge,
         controller_node,
+        velocity_node,
     ])

@@ -30,11 +30,22 @@ hybrid_force_motion_controller:
       alpha: 0.15
       min_speed_mps: 0.001
 
+    contact_force_min_threshold_N: 0.1
+
+    publish_contact_frame: true
+    contact_frame_id: contact_frame
+
+cartesian_velocity_controller:
+  ros__parameters:
+    control_frequency_hz: 250.0
+    base_link: base_link
+    tool_link: p42v_link1
+    joint_names: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint, wrist_1_joint, wrist_2_joint, wrist_3_joint]
+
     velocity_limits:
       linear_mps: 0.05
       angular_radps: 0.5
 
     joint_velocity_limits: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
-
-    publish_contact_frame: true
-    contact_frame_id: contact_frame
+    twist_timeout_s: 0.1
+    twist_topic: /hybrid_force_motion_controller/twist_cmd

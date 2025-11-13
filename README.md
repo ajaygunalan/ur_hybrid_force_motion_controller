@@ -20,7 +20,7 @@ colcon build --packages-select hybrid_force_motion_controller && source install/
 ## Run Sequence
 1. Launch the sim stack (replace with your hardware bringup command when on the robot)
 
-    `hybrid_force_motion_sim.launch.py` starts everything needed for simulation (UR bringup, dome, bridge, hybrid controller). Hardware bringup follows the same run sequence, but you launch your physical UR stack instead of the sim launch.
+    `hybrid_force_motion_sim.launch.py` starts everything needed for simulation (UR bringup, dome, bridge, the hybrid force-motion node, and the new Cartesian velocity controller). Hardware bringup follows the same run sequence, but you launch your physical UR stack instead of the sim launch.
     
    ```bash
    ros2 launch hybrid_force_motion_controller hybrid_force_motion_sim.launch.py ur_type:=ur5e
@@ -58,11 +58,15 @@ Monitor `/hybrid_force_motion_controller/state`, `/netft/proc_probe`, and TF `co
 | Topic | `/scaled_joint_trajectory_controller/joint_trajectory` | Publish a one-shot joint array to “teleport” the UR arm before running the controller. |
 | Topic | `/hybrid_force_motion_controller/state` (`HybridForceMotionState`) | Finite-state-machine status, tangential progress, PI band info, pause/fault flags. |
 | Topic | `/hybrid_force_motion_controller/direction` (`geometry_msgs/Vector3`, optional) | Live override for tangential direction hint. |
+| Topic | `/hybrid_force_motion_controller/twist_cmd` (`geometry_msgs/TwistStamped`) | Base-frame Cartesian twist published by the hybrid node and consumed by `cartesian_velocity_controller`. |
 | TF | `contact_frame` | Published each control cycle for RViz verification (normal = Z-axis). |
 
 ## What to Expect During a Run
-- The controller drives only +Z velocity until `/netft/proc_probe` reports 5 N within ±0.2 N, then automatically dwells for ~1 s before allowing any XY motion.
+- The controller enforces the configured `search_direction` (default base −Z) during SEEK and DWELL, so the press stays vertical until the `/netft/proc_base` wrench shows 5 N within ±0.2 N and the 1 s dwell timer expires—only then is any tangential motion allowed.
 - Tangential velocity is recomputed every cycle inside the contact frame supplied by the friction-normal estimator (see `reference/friction_normal_estimator.md`), so unknown curvature simply tilts the frame while the probe orientation stays aligned.
+- `contact_force_min_threshold_N` (default 0.1 N) gates the friction-aware normal estimator; raise it (e.g., to 1–2 N) if you want reorientation to happen only once a firm contact load is present. The estimator also requires a minimum tangential sliding speed, so it ignores dithering along the normal axis.
+- `cartesian_velocity_controller` listens to `/hybrid_force_motion_controller/twist_cmd`, re-applies the Cartesian and joint velocity limits once (in base_link), and pushes `/forward_velocity_controller/commands`, so you can inspect the twist topic directly if you need to debug motions.
+- Tangential progress is measured from the actual end-effector pose (projected along the live tangential axis), so the logged `tangential_distance` reflects what the tool really did, not just what was commanded.
 - Each `start_motion` integrates exactly 0.05 m of tangential distance; `pause_motion`/`resume_motion` finish the remaining distance, while `stop_motion` resets the counter so the next run performs a full 5 cm.
 - The PI loop retains the soft-start and anti-windup logic, so steady-state normal-force error remains below the sensor bias even while sliding or when the surface height varies.
 - If `(F·n̂)` drops below the disengage threshold for `N` cycles the node zeroes velocity commands, enters `FAULT`, and logs `CONTACT_LOST`. Other FAULT causes include TF lookup failures, Jacobian ill-conditioning, NaNs, or limit saturation; `set_start_pose` is always required to recover.

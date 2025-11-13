@@ -38,7 +38,16 @@ add_executable(hybrid_force_motion_node
   src/hybrid_force_motion_node.cpp
 )
 
+add_executable(cartesian_velocity_controller_node
+  src/cartesian_velocity_controller_node.cpp
+)
+
 target_include_directories(hybrid_force_motion_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+target_include_directories(cartesian_velocity_controller_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
@@ -64,12 +73,37 @@ target_link_libraries(hybrid_force_motion_node
   ${orocos_kdl_LIBRARIES}
 )
 
+ament_target_dependencies(cartesian_velocity_controller_node
+  rclcpp
+  geometry_msgs
+  sensor_msgs
+  std_msgs
+  tf2
+  tf2_ros
+  tf2_eigen
+  tf2_geometry_msgs
+  Eigen3
+  orocos_kdl
+  kdl_parser
+  urdf
+)
+
+target_link_libraries(cartesian_velocity_controller_node
+  Eigen3::Eigen
+  ${orocos_kdl_LIBRARIES}
+)
+
 rosidl_get_typesupport_target(cpp_typesupport_target
   ${PROJECT_NAME} "rosidl_typesupport_cpp")
 target_link_libraries(hybrid_force_motion_node
   ${cpp_typesupport_target})
 
-install(TARGETS hybrid_force_motion_node
+target_link_libraries(cartesian_velocity_controller_node
+  ${cpp_typesupport_target})
+
+install(TARGETS
+  hybrid_force_motion_node
+  cartesian_velocity_controller_node
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch worlds reference meshes config

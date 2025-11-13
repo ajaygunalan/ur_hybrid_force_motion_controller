@@ -8,14 +8,16 @@
 ## 2. System Architecture (Mid-Level View)
 1. **Package layout**
    - `include/hybrid_force_motion_controller/` — main node + helper classes (parameters, state machine, Jacobian utilities).
-   - `src/hybrid_force_motion_node.cpp` — executes the control loop, TF logic, operator services.
+   - `src/hybrid_force_motion_node.cpp` — executes the force/motion FSM, publishes the Cartesian twist command, and handles services/state.
+   - `src/cartesian_velocity_controller_node.cpp` — subscribes to the twist command, enforces Cartesian/joint limits, performs IK, and drives `/forward_velocity_controller/commands`.
    - `config/hybrid_force_motion_config.yaml` — gains (normal PI with soft-start, tangential P), limits, thresholds, frame names.
    - `launch/hybrid_force_motion_sim.launch.py` — launches UR Gazebo, the dome world, the bridge service, and the hybrid controller. Hardware runs the same node after your standard UR bringup.
    - `reference/friction_normal_estimator.md` — keeps the friction-aware normal math (migrated from `Untitled.md`).
 2. **External dependencies** — `rclcpp`, `rclcpp_components`, `geometry_msgs`, `sensor_msgs`, `std_msgs`, `std_srvs`, `tf2_ros`, `tf2_geometry_msgs`, `tf2_eigen`, `Eigen3`, `kdl_parser`, `urdfdom`, and direct include access to `ur_admittance_controller` headers for shared constants.
 3. **Runtime nodes**
-   - `wrench_node` (from `ur_admittance_controller`) publishes `/netft/proc_probe`.
-   - `hybrid_force_motion_node` subscribes to `/netft/proc_probe`, `/joint_states`, TF, and optional `/hybrid_force_motion_controller/direction`; publishes `/forward_velocity_controller/commands`, `tf` contact frame, and a diagnostic topic `/hybrid_force_motion_controller/state`.
+   - `wrench_node` (from `ur_admittance_controller`) publishes `/netft/proc_sensor`, `/netft/proc_probe`, and the new `/netft/proc_base` topic used by the hybrid controller.
+   - `hybrid_force_motion_node` subscribes to `/netft/proc_base`, `/joint_states`, TF, and optional `/hybrid_force_motion_controller/direction`; publishes the diagnostic state topic plus `/hybrid_force_motion_controller/twist_cmd`.
+   - `cartesian_velocity_controller_node` consumes `/hybrid_force_motion_controller/twist_cmd`, applies the configured limits, runs the KDL IK, and publishes `/forward_velocity_controller/commands`.
    - Simulation helpers: CLI commands only (`gz service /world/<world>/set_pose` for the dome and `ros2 topic pub --once /scaled_joint_trajectory_controller/joint_trajectory ...` for joint presets). No dedicated teleporter nodes remain.
 
 ## 3. End-to-End Test Checklist
@@ -46,12 +48,14 @@
 ## 4. Detailed Design
 
 ### 4.1 Force & Motion Control Loop
-- **Surface-normal estimation (friction-aware)** — implement Algorithm 1 from `reference/friction_normal_estimator.md`. Project the measured wrench onto the direction of motion, estimate Coulomb friction `\bar{\mu}`, subtract the tangential component, and normalize to obtain `\hat{n}_\text{surf}`. Use this for all projections.
+- **Frame conventions** — normalize everything in the `base_link` frame: `/netft/proc_base` supplies the compensated wrench expressed in base, `search_direction`/`contact_normal`/`tangential_dir` live in base, and `/hybrid_force_motion_controller/twist_cmd` is a base-frame twist consumed by the Cartesian velocity node.
+- **Pre-contact normal locking** — while the FSM is in SEEK or DWELL, clamp `\hat{n}` to the configured `search_direction` (default base −Z) so the press direction can’t be hijacked by residual wrench bias; only tangential motion is withheld until the 5 N band and dwell timer complete.
+- **Surface-normal estimation (friction-aware)** — implement Algorithm 1 from `reference/friction_normal_estimator.md`. Project the measured wrench onto the direction of motion, estimate Coulomb friction `\bar{\mu}`, subtract the tangential component, and normalize to obtain `\hat{n}_\text{surf}`. Use this for all projections once the slide is active.
 - **Velocity command decomposition**
   - Tangential: `v_t = clamp(k_t * s_rem, ±v_t_max)` where `s_rem` is remaining tangential distance along the projected hint vector `\hat{t}`.
   - Normal: PI regulator `v_n = clamp(k_p e_F + k_i \int e_F dt, ±v_n_max)` to remove steady-state error from friction/bias; apply a slew-rate limit on `v_n` plus a configurable soft-start (`normal.softstart_time_s`) that ramps the internal force setpoint from 0→5 N over 0.5–1 s after RUNNING begins.
-  - Compose the Cartesian twist `[v_t \hat{t} + v_n \hat{n}_\text{surf}, 0,0,0]`, run through a damped least-squares Jacobian pseudo-inverse, and clip by per-joint velocity limits.
-- **Friction-aware enhancements** — expose parameters to toggle the estimator on/off and to tune the moving average on `\mu`. Default to enabled to match the dome-tracking literature cited in the reference note.
+  - Compose the Cartesian twist `[v_t \hat{t} + v_n \hat{n}_\text{surf}, 0,0,0]` and publish it on `/hybrid_force_motion_controller/twist_cmd`; the dedicated velocity node handles IK and the only global twist clamp.
+- **Friction-aware enhancements** — expose parameters to toggle the estimator on/off, to tune the moving average on `\mu`, and to require both a minimum contact load (`contact_force_min_threshold_N`) and a minimum tangential sliding speed before updating the frame. Default to enabled to match the dome-tracking literature cited in the reference note.
 
 ### 4.2 State Machine & Operator Interfaces
 - States: `WAIT_FOR_START_POSE → READY → RUNNING ↔ PAUSED → COMPLETED`. Add `ABORTED` (operator stop) and `FAULT` (internal error). Only `set_start_pose` transitions out of `FAULT` or `ABORTED`.
@@ -59,7 +63,7 @@
   - `/hybrid_force_motion_controller/set_start_pose` — capture TF pose, wrench snapshot, zero integrators, transition to `READY` (replaces `init_robot`).
   - `/start_motion`, `/pause_motion`, `/resume_motion`, `/stop_motion` — drive state transitions. `stop_motion` enters `ABORTED`.
   - `/scaled_joint_trajectory_controller/joint_trajectory` (sim) — command topic used to drop the UR arm joints into a preset pose before the controller takes over.
-- Diagnostic topic `/hybrid_force_motion_controller/state` publishes current state, tangential progress, normal force, and error flags for logging/monitoring.
+- Diagnostic topic `/hybrid_force_motion_controller/state` publishes current state, tangential progress (measured from the actual FK pose projected along the instantaneous tangential axis), normal force, and error flags for logging/monitoring. The Cartesian velocity command is exposed on `/hybrid_force_motion_controller/twist_cmd`, downstream of which the new node produces `/forward_velocity_controller/commands`.
 
 ### 4.3 Safety, Faults, and Contact Management
 - **Contact-loss detector** — if `(F · \hat{n}_\text{surf}) < disengage_threshold` for `N` consecutive control cycles, immediately zero commands and enter `FAULT` with reason `CONTACT_LOST`.

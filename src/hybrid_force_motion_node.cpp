@@ -10,12 +10,12 @@
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <geometry_msgs/msg/twist_stamped.hpp>
 #include <geometry_msgs/msg/vector3.hpp>
 #include <geometry_msgs/msg/wrench_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/parameter_client.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
-#include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <tf2_ros/transform_broadcaster.h>
@@ -108,53 +108,6 @@ bool ComputeForwardKinematics(const std::vector<double>& joints,
   return true;
 }
 
-Eigen::Matrix3d KdlRotationToEigen(const KDL::Rotation& rot) {
-  double x, y, z, w;
-  rot.GetQuaternion(x, y, z, w);
-  Eigen::Quaterniond q(w, x, y, z);
-  return q.toRotationMatrix();
-}
-
-bool ComputeJointVelocity(const Eigen::Matrix<double, 6, 1>& twist_world,
-                          const std::vector<double>& joints,
-                          KDL::ChainIkSolverVel_wdls* solver,
-                          std::vector<double>& qdot_out) {
-  if (!solver) return false;
-
-  KDL::JntArray q = ToJntArray(joints);
-  KDL::Twist twist;
-  twist.vel = KDL::Vector(twist_world(0), twist_world(1), twist_world(2));
-  twist.rot = KDL::Vector(twist_world(3), twist_world(4), twist_world(5));
-
-  KDL::JntArray qdot(joints.size());
-  if (solver->CartToJnt(q, twist, qdot) < 0) {
-    return false;
-  }
-
-  qdot_out.resize(joints.size());
-  for (size_t i = 0; i < joints.size(); ++i) {
-    double value = qdot(i);
-    if (std::isnan(value) || std::isinf(value)) {
-      return false;
-    }
-    qdot_out[i] = value;
-  }
-  return true;
-}
-
-void LimitTwist(Eigen::Matrix<double, 6, 1>& twist,
-                double max_linear,
-                double max_angular) {
-  double lin_norm = twist.head<3>().norm();
-  if (max_linear > 0.0 && lin_norm > max_linear && lin_norm > 1e-6) {
-    twist.head<3>() *= (max_linear / lin_norm);
-  }
-  double ang_norm = twist.tail<3>().norm();
-  if (max_angular > 0.0 && ang_norm > max_angular && ang_norm > 1e-6) {
-    twist.tail<3>() *= (max_angular / ang_norm);
-  }
-}
-
 Eigen::Vector3d NormalizeOrFallback(const Eigen::Vector3d& v,
                                     const Eigen::Vector3d& fallback) {
   if (v.norm() < 1e-6) {
@@ -166,14 +119,6 @@ Eigen::Vector3d NormalizeOrFallback(const Eigen::Vector3d& v,
 Eigen::Vector3d ProjectOntoPlane(const Eigen::Vector3d& v,
                                  const Eigen::Vector3d& normal) {
   return v - normal * (v.dot(normal));
-}
-
-void ClampVectorInPlace(std::vector<double>& values,
-                        const std::vector<double>& limits) {
-  for (size_t i = 0; i < values.size(); ++i) {
-    double limit = (i < limits.size()) ? limits[i] : limits.back();
-    values[i] = std::clamp(values[i], -limit, limit);
-  }
 }
 
 }  // namespace
@@ -253,22 +198,8 @@ private:
     estimator_enabled_ = declare_parameter("estimator.enable", true);
     estimator_alpha_ = declare_parameter("estimator.alpha", 0.15);
     estimator_min_speed_ = declare_parameter("estimator.min_speed_mps", 0.001);
-
-    linear_limit_ = declare_parameter("velocity_limits.linear_mps", 0.05);
-    angular_limit_ = declare_parameter("velocity_limits.angular_radps", 0.5);
-
-    joint_velocity_limits_ = declare_parameter<std::vector<double>>(
-        "joint_velocity_limits", std::vector<double>(joint_names_.size(), 0.5));
-    if (joint_velocity_limits_.size() != joint_names_.size()) {
-      RCLCPP_WARN(get_logger(),
-                  "joint_velocity_limits size (%zu) differs from joint_names (%zu); "
-                  "using first value for all joints",
-                  joint_velocity_limits_.size(), joint_names_.size());
-      joint_velocity_limits_.assign(joint_names_.size(),
-                                    joint_velocity_limits_.empty()
-                                        ? 0.5
-                                        : joint_velocity_limits_[0]);
-    }
+    contact_force_min_threshold_ =
+        declare_parameter("contact_force_min_threshold_N", 0.1);
 
     publish_contact_frame_ = declare_parameter("publish_contact_frame", true);
     contact_frame_id_ = declare_parameter<std::string>("contact_frame_id", "contact_frame");
@@ -294,19 +225,15 @@ private:
     }
 
     std::string err;
+    std::unique_ptr<KDL::ChainIkSolverVel_wdls> unused_ik;
     if (!BuildKinematics(model, base_link_, tool_link_, err,
                          kdl_tree_, kdl_chain_, joint_count_, wrist_to_tool_,
-                         fk_solver_, ik_solver_)) {
+                         fk_solver_, unused_ik)) {
       RCLCPP_FATAL(get_logger(), "Kinematics init failed: %s", err.c_str());
       throw std::runtime_error("kinematics failure");
     }
 
-    wrist_to_tool_translation_ = Eigen::Vector3d(
-        wrist_to_tool_.p.x(), wrist_to_tool_.p.y(), wrist_to_tool_.p.z());
-    wrist_to_tool_rotation_ = KdlRotationToEigen(wrist_to_tool_.M);
-
     joint_positions_.assign(joint_count_, 0.0);
-    qdot_buffer_.assign(joint_count_, 0.0);
     last_twist_cmd_.setZero();
     RCLCPP_INFO(get_logger(), "Loaded KDL chain %s -> %s (%zu joints)",
                 base_link_.c_str(), tool_link_.c_str(), joint_count_);
@@ -315,7 +242,7 @@ private:
   void SetupInterfaces() {
     auto sensor_qos = rclcpp::SensorDataQoS();
     wrench_sub_ = create_subscription<geometry_msgs::msg::WrenchStamped>(
-        "/netft/proc_probe", sensor_qos,
+        "/netft/proc_base", sensor_qos,
         std::bind(&HybridForceMotionNode::OnWrench, this, std::placeholders::_1));
     joint_state_sub_ = create_subscription<sensor_msgs::msg::JointState>(
         "/joint_states", 20,
@@ -324,8 +251,8 @@ private:
         "~/direction", 1,
         std::bind(&HybridForceMotionNode::OnDirectionHint, this, std::placeholders::_1));
 
-    velocity_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
-        "/forward_velocity_controller/commands", 10);
+    twist_pub_ = create_publisher<geometry_msgs::msg::TwistStamped>(
+        "~/twist_cmd", 10);
     state_pub_ = create_publisher<StateMsg>("~/state", 10);
     tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
 
@@ -354,19 +281,15 @@ private:
         std::chrono::duration<double>(control_period_s_),
         std::bind(&HybridForceMotionNode::ControlLoop, this));
 
-    velocity_msg_.layout.dim.resize(1);
-    velocity_msg_.layout.dim[0].label = "joints";
-    velocity_msg_.layout.dim[0].size = joint_count_;
-    velocity_msg_.layout.dim[0].stride = joint_count_;
-    velocity_msg_.data.assign(joint_count_, 0.0);
+    twist_msg_.header.frame_id = base_link_;
   }
 
   // ---- callbacks ----
   void OnWrench(const geometry_msgs::msg::WrenchStamped::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(data_mutex_);
-    force_probe_ = Eigen::Vector3d(msg->wrench.force.x,
-                                   msg->wrench.force.y,
-                                   msg->wrench.force.z);
+    force_base_ = Eigen::Vector3d(msg->wrench.force.x,
+                                  msg->wrench.force.y,
+                                  msg->wrench.force.z);
     wrench_ready_ = true;
   }
 
@@ -419,6 +342,8 @@ private:
     }
 
     start_pose_ = pose;
+    last_tool_position_ = pose.translation();
+    tool_position_initialized_ = true;
     contact_normal_ = search_direction_;
     tangential_dir_ = ProjectAndNormalize(direction_hint_, contact_normal_);
 
@@ -500,37 +425,30 @@ private:
   void ControlLoop() {
     std::lock_guard<std::mutex> lock(data_mutex_);
     if (!InputsReady()) {
-      PublishZeroVelocity();
+      PublishZeroTwist();
       PublishState(0.0);
       return;
     }
 
     if (!UpdateToolPose()) {
-      PublishZeroVelocity();
+      PublishZeroTwist();
       PublishState(0.0);
       return;
     }
 
-    Eigen::Vector3d force_world = current_pose_.linear() * force_probe_;
+    UpdateTangentialProgress();
+
+    Eigen::Vector3d force_world = force_base_;
     double normal_force = UpdateContactFrame(force_world);
     UpdatePhaseForForce(normal_force);
 
-    Eigen::Vector3d linear_cmd = Eigen::Vector3d::Zero();
-    bool command_active = ComputeLinearCommand(normal_force, linear_cmd);
-    Eigen::Matrix<double, 6, 1> twist = Eigen::Matrix<double, 6, 1>::Zero();
+    Eigen::Vector3d linear_world = Eigen::Vector3d::Zero();
+    bool command_active = ComputeLinearCommand(normal_force, linear_world);
 
     if (command_active) {
-      twist.head<3>() = linear_cmd;
-      twist.tail<3>().setZero();
-      LimitTwist(twist, linear_limit_, angular_limit_);
-      last_twist_cmd_ = twist;
-      if (!SendJointVelocityCommand(twist)) {
-        EnterFault("IK_FAILED");
-        PublishZeroVelocity();
-      }
+      PublishTwistCommand(linear_world);
     } else {
-      last_twist_cmd_.setZero();
-      PublishZeroVelocity();
+      PublishZeroTwist();
     }
 
     PublishState(normal_force);
@@ -543,12 +461,6 @@ private:
 
   bool UpdateToolPose() {
     return ComputeForwardKinematics(joint_positions_, fk_solver_.get(), wrist_to_tool_, current_pose_);
-  }
-
-  Eigen::Vector3d WristOffsetWorld() const {
-    Eigen::Matrix3d R_tool = current_pose_.linear();
-    Eigen::Matrix3d R_wrist = R_tool * wrist_to_tool_rotation_.transpose();
-    return R_wrist * wrist_to_tool_translation_;
   }
 
   bool ComputeLinearCommand(double normal_force, Eigen::Vector3d& linear_cmd) {
@@ -583,45 +495,60 @@ private:
       double tangential_speed = std::min(tangential_speed_limit_,
                                          tangential_gain_ * remaining);
       linear_cmd += tangential_dir_ * tangential_speed;
-      tangential_distance_ += tangential_speed * control_period_s_;
     }
 
     return true;
   }
 
-  bool SendJointVelocityCommand(const Eigen::Matrix<double, 6, 1>& twist) {
-    Eigen::Matrix<double, 6, 1> wrist_twist = twist;
-    Eigen::Vector3d offset = WristOffsetWorld();
-    wrist_twist.head<3>() = twist.head<3>() - twist.tail<3>().cross(offset);
+  void PublishTwistCommand(const Eigen::Vector3d& linear_world) {
+    Eigen::Matrix<double, 6, 1> twist = Eigen::Matrix<double, 6, 1>::Zero();
+    twist.head<3>() = linear_world;
+    last_twist_cmd_ = twist;
 
-    if (!ComputeJointVelocity(wrist_twist, joint_positions_, ik_solver_.get(), qdot_buffer_)) {
-      return false;
-    }
-    ClampVectorInPlace(qdot_buffer_, joint_velocity_limits_);
-    PublishVelocity(qdot_buffer_);
-    return true;
+    twist_msg_.header.stamp = now();
+    twist_msg_.twist.linear.x = twist(0);
+    twist_msg_.twist.linear.y = twist(1);
+    twist_msg_.twist.linear.z = twist(2);
+    twist_msg_.twist.angular.x = twist(3);
+    twist_msg_.twist.angular.y = twist(4);
+    twist_msg_.twist.angular.z = twist(5);
+    twist_pub_->publish(twist_msg_);
   }
 
   double UpdateContactFrame(const Eigen::Vector3d& force_world) {
+    const double force_norm = force_world.norm();
+
+    if (phase_ != Phase::TANGENTIAL) {
+      contact_normal_ = search_direction_;
+      tangential_dir_ = ProjectAndNormalize(tangential_dir_, contact_normal_);
+      Eigen::Vector3d sensed_normal = contact_normal_;
+      if (force_norm > 1e-6 && force_world.dot(sensed_normal) < 0.0) {
+        sensed_normal = -sensed_normal;
+      }
+      return force_world.dot(sensed_normal);
+    }
+
+    if (force_norm < contact_force_min_threshold_) {
+      return force_world.dot(contact_normal_);
+    }
+
     Eigen::Vector3d normal = contact_normal_;
-    if (force_world.norm() > 1e-4) {
-      if (estimator_enabled_ &&
-          phase_ == Phase::TANGENTIAL &&
-          last_twist_cmd_.head<3>().norm() > estimator_min_speed_) {
-        Eigen::Vector3d v_hat = last_twist_cmd_.head<3>().normalized();
-        double f_parallel = force_world.dot(v_hat);
-        Eigen::Vector3d f_v = f_parallel * v_hat;
-        Eigen::Vector3d f_perp = force_world - f_v;
-        if (f_perp.norm() > 1e-4) {
-          double mu = std::clamp(f_v.norm() / f_perp.norm(), 0.0, 5.0);
-          mu_filtered_ = estimator_alpha_ * mu + (1.0 - estimator_alpha_) * mu_filtered_;
-          Eigen::Vector3d f_tau = -mu_filtered_ * f_perp.norm() * v_hat;
-          Eigen::Vector3d f_normal = force_world - f_tau;
-          if (f_normal.norm() > 1e-5) {
-            normal = f_normal.normalized();
-          } else {
-            normal = force_world.normalized();
-          }
+    double tangential_speed = std::abs(last_twist_cmd_.head<3>().dot(tangential_dir_));
+    if (estimator_enabled_ &&
+        tangential_speed > estimator_min_speed_) {
+      Eigen::Vector3d v_hat = (last_twist_cmd_.head<3>().dot(tangential_dir_) >= 0.0)
+                                  ? tangential_dir_
+                                  : -tangential_dir_;
+      double f_parallel = force_world.dot(v_hat);
+      Eigen::Vector3d f_v = f_parallel * v_hat;
+      Eigen::Vector3d f_perp = force_world - f_v;
+      if (f_perp.norm() > 1e-4) {
+        double mu = std::clamp(f_v.norm() / f_perp.norm(), 0.0, 5.0);
+        mu_filtered_ = estimator_alpha_ * mu + (1.0 - estimator_alpha_) * mu_filtered_;
+        Eigen::Vector3d f_tau = -mu_filtered_ * f_perp.norm() * v_hat;
+        Eigen::Vector3d f_normal = force_world - f_tau;
+        if (f_normal.norm() > 1e-5) {
+          normal = f_normal.normalized();
         } else {
           normal = force_world.normalized();
         }
@@ -629,7 +556,7 @@ private:
         normal = force_world.normalized();
       }
     } else {
-      normal = search_direction_;
+      normal = force_world.normalized();
     }
 
     if (normal.dot(contact_normal_) < 0.0) {
@@ -700,14 +627,28 @@ private:
     return std::abs(normal_force - normal_target_) <= normal_tolerance_;
   }
 
-  void PublishVelocity(const std::vector<double>& qdot) {
-    velocity_msg_.data = qdot;
-    velocity_pub_->publish(velocity_msg_);
+  void PublishZeroTwist() {
+    last_twist_cmd_.setZero();
+    twist_msg_.header.stamp = now();
+    twist_msg_.twist = geometry_msgs::msg::Twist();
+    twist_pub_->publish(twist_msg_);
   }
 
-  void PublishZeroVelocity() {
-    velocity_msg_.data.assign(joint_count_, 0.0);
-    velocity_pub_->publish(velocity_msg_);
+  void UpdateTangentialProgress() {
+    Eigen::Vector3d current = current_pose_.translation();
+    if (!tool_position_initialized_) {
+      last_tool_position_ = current;
+      tool_position_initialized_ = true;
+      return;
+    }
+
+    Eigen::Vector3d delta = current - last_tool_position_;
+    last_tool_position_ = current;
+
+    if (state_ == RunState::RUNNING && phase_ == Phase::TANGENTIAL) {
+      double projection = delta.dot(tangential_dir_);
+      tangential_distance_ = std::max(0.0, tangential_distance_ + projection);
+    }
   }
 
   void PublishState(double normal_force) {
@@ -806,15 +747,15 @@ private:
   std::vector<std::string> joint_names_;
   std::vector<double> joint_positions_;
   std::vector<size_t> joint_state_index_;
-  std::vector<double> joint_velocity_limits_;
-  std::vector<double> qdot_buffer_;
   bool joint_ready_{false};
   bool joint_map_ready_{false};
   bool wrench_ready_{false};
 
-  Eigen::Vector3d force_probe_{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d force_base_{Eigen::Vector3d::Zero()};
   Eigen::Isometry3d current_pose_{Eigen::Isometry3d::Identity()};
   Eigen::Isometry3d start_pose_{Eigen::Isometry3d::Identity()};
+  Eigen::Vector3d last_tool_position_{Eigen::Vector3d::Zero()};
+  bool tool_position_initialized_{false};
 
   Eigen::Vector3d search_direction_{0.0, 0.0, -1.0};
   Eigen::Vector3d contact_normal_{0.0, 0.0, -1.0};
@@ -846,9 +787,7 @@ private:
   double estimator_alpha_{0.15};
   double estimator_min_speed_{0.001};
   double mu_filtered_{0.0};
-
-  double linear_limit_{0.05};
-  double angular_limit_{0.5};
+  double contact_force_min_threshold_{0.1};
 
   bool publish_contact_frame_{true};
   std::string contact_frame_id_{"contact_frame"};
@@ -863,7 +802,7 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr wrench_sub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Vector3>::SharedPtr direction_sub_;
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr velocity_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr twist_pub_;
   rclcpp::Publisher<StateMsg>::SharedPtr state_pub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr set_start_srv_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr start_srv_;
@@ -872,17 +811,14 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_srv_;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   rclcpp::TimerBase::SharedPtr control_timer_;
-  std_msgs::msg::Float64MultiArray velocity_msg_;
+  geometry_msgs::msg::TwistStamped twist_msg_;
 
   // KDL
   KDL::Tree kdl_tree_;
   KDL::Chain kdl_chain_;
   size_t joint_count_{0};
   std::unique_ptr<KDL::ChainFkSolverPos_recursive> fk_solver_;
-  std::unique_ptr<KDL::ChainIkSolverVel_wdls> ik_solver_;
   KDL::Frame wrist_to_tool_{KDL::Frame::Identity()};
-  Eigen::Vector3d wrist_to_tool_translation_{Eigen::Vector3d::Zero()};
-  Eigen::Matrix3d wrist_to_tool_rotation_{Eigen::Matrix3d::Identity()};
 
   std::mutex data_mutex_;
 };
