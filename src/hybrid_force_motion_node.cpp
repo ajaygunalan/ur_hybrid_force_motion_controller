@@ -108,6 +108,13 @@ bool ComputeForwardKinematics(const std::vector<double>& joints,
   return true;
 }
 
+Eigen::Matrix3d KdlRotationToEigen(const KDL::Rotation& rot) {
+  double x, y, z, w;
+  rot.GetQuaternion(x, y, z, w);
+  Eigen::Quaterniond q(w, x, y, z);
+  return q.toRotationMatrix();
+}
+
 bool ComputeJointVelocity(const Eigen::Matrix<double, 6, 1>& twist_world,
                           const std::vector<double>& joints,
                           KDL::ChainIkSolverVel_wdls* solver,
@@ -293,6 +300,10 @@ private:
       RCLCPP_FATAL(get_logger(), "Kinematics init failed: %s", err.c_str());
       throw std::runtime_error("kinematics failure");
     }
+
+    wrist_to_tool_translation_ = Eigen::Vector3d(
+        wrist_to_tool_.p.x(), wrist_to_tool_.p.y(), wrist_to_tool_.p.z());
+    wrist_to_tool_rotation_ = KdlRotationToEigen(wrist_to_tool_.M);
 
     joint_positions_.assign(joint_count_, 0.0);
     qdot_buffer_.assign(joint_count_, 0.0);
@@ -534,6 +545,12 @@ private:
     return ComputeForwardKinematics(joint_positions_, fk_solver_.get(), wrist_to_tool_, current_pose_);
   }
 
+  Eigen::Vector3d WristOffsetWorld() const {
+    Eigen::Matrix3d R_tool = current_pose_.linear();
+    Eigen::Matrix3d R_wrist = R_tool * wrist_to_tool_rotation_.transpose();
+    return R_wrist * wrist_to_tool_translation_;
+  }
+
   bool ComputeLinearCommand(double normal_force, Eigen::Vector3d& linear_cmd) {
     if (state_ != RunState::RUNNING && state_ != RunState::PAUSED) {
       return false;
@@ -573,7 +590,11 @@ private:
   }
 
   bool SendJointVelocityCommand(const Eigen::Matrix<double, 6, 1>& twist) {
-    if (!ComputeJointVelocity(twist, joint_positions_, ik_solver_.get(), qdot_buffer_)) {
+    Eigen::Matrix<double, 6, 1> wrist_twist = twist;
+    Eigen::Vector3d offset = WristOffsetWorld();
+    wrist_twist.head<3>() = twist.head<3>() - twist.tail<3>().cross(offset);
+
+    if (!ComputeJointVelocity(wrist_twist, joint_positions_, ik_solver_.get(), qdot_buffer_)) {
       return false;
     }
     ClampVectorInPlace(qdot_buffer_, joint_velocity_limits_);
@@ -860,6 +881,8 @@ private:
   std::unique_ptr<KDL::ChainFkSolverPos_recursive> fk_solver_;
   std::unique_ptr<KDL::ChainIkSolverVel_wdls> ik_solver_;
   KDL::Frame wrist_to_tool_{KDL::Frame::Identity()};
+  Eigen::Vector3d wrist_to_tool_translation_{Eigen::Vector3d::Zero()};
+  Eigen::Matrix3d wrist_to_tool_rotation_{Eigen::Matrix3d::Identity()};
 
   std::mutex data_mutex_;
 };
