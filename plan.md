@@ -29,15 +29,16 @@
      2. Calling `gz service -s /world/contact_dome/set_pose ...` updates the dome pose, confirmed via RViz TF or Gazebo GUI.
      3. Publishing to `/scaled_joint_trajectory_controller/joint_trajectory` places the arm exactly at the requested joint pose (verified by TF and joint state echo).
      4. No hybrid controller running yet; success = manual/teleport contact achieved repeatedly.
-2. **Phase 2 — Hybrid Force/Motion Control**
-   - Deliverables:
-     - Full controller node with PI soft-start normal regulation, tangential displacement tracking, friction-aware normal estimator, contact frame TF publication, and the state-machine services.
-     - Contact-loss detector and FAULT handling tied into the teleport workflow (after snapping joints you still call `set_start_pose` before `start_motion`).
+2. **Phase 2 — Contact Seek + Tangential Traverse**
+   - Behavior: `start_motion` commands pure +Z velocity until the measured normal force reaches 5 N ± 0.2 N. The PI loop still uses the configurable soft-start, and the controller holds the load inside the band for ~1 s before any XY motion begins—no operator pause is required for this dwell.
+   - Tangential move: once the dwell finishes, XY velocity is projected into the live tangent plane and integrated until exactly 0.05 m of displacement accumulates. Every `start_motion` call executes a fresh 5 cm segment, `pause_motion`/`resume_motion` finish the remaining distance, and `stop_motion` resets progress to zero so the next start performs a full 5 cm again.
+   - Unknown surfaces: each control cycle fuses the current velocity with the sensed wrench using the friction-normal estimator from `reference/friction_normal_estimator.md`, yielding a contact frame whose Z-axis is the corrected surface normal. The tangential command is recomputed inside this frame, so curvature or height variations simply tilt the frame while Z-regulation maintains the load.
+   - Deliverables: controller node, services, TF publication of the contact frame, progress/force diagnostics, and log hooks that prove the ±0.2 N window, dwell timer, and 5 cm counter behave deterministically.
    - Test 2 checklist:
-     1. With Phase 1 environment running, call `set_start_pose` followed by `start_motion`; verify RUNNING begins only after engage force threshold is exceeded.
-     2. Observe the normal soft-start ramp (force ramps smoothly to 5 N), TF contact frame aligns with the dome, and tangential displacement halts at 0.05 m.
-     3. Drop the force below threshold to confirm the contact-loss detector trips FAULT and zeroes commands; `set_start_pose` recovers.
-     4. Exercise pause/resume/stop services and ensure diagnostics reflect the correct state transitions.
+     1. Launch the stack, call `set_start_pose`, then `start_motion`; confirm RUNNING is announced only when the force enters 5 N ± 0.2 N and that the 1 s dwell completes before XY velocity appears.
+     2. Watch `/hybrid_force_motion_controller/state` or the CLI helper to see tangential displacement clamp at 0.05 m per run; issue `pause_motion`/`resume_motion` to verify remaining-distance handling and `stop_motion` to confirm the counter resets.
+     3. Jog the robot to drop the force below the disengage threshold and ensure the controller falls back to the Z-press logic, re-establishes the load, and resumes the tangential path (or enters `FAULT` if contact is lost too long).
+     4. Inspect the TF `contact_frame` or the estimator status topic to verify the normal and probe orientation stay aligned while traversing curved sections.
 3. **Future phases (scoped but not yet scheduled)** — null-space orientation optimizer, automated pose sequencer, additional hardware soak tests. These inherit from the first two phases but are not required before initial delivery.
 
 This phased approach keeps the build linear: Phase 1 must pass before Phase 2 starts, mirroring the methodology used in `ur_admittance_controller` (URDF bring-up → wrench pipeline → controller).
