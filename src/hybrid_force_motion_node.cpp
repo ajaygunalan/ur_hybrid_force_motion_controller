@@ -469,7 +469,7 @@ private:
     }
 
     double normal_setpoint = GetNormalSetpoint();
-    double normal_vel = ComputeNormalVelocity(normal_setpoint, normal_force);
+    double normal_vel = ComputeNormalVelocity(-normal_setpoint, normal_force);
     linear_cmd = normal_vel * contact_normal_;
 
     if (phase_ == Phase::SEEK) {
@@ -521,11 +521,7 @@ private:
     if (phase_ != Phase::TANGENTIAL) {
       contact_normal_ = search_direction_;
       tangential_dir_ = ProjectAndNormalize(tangential_dir_, contact_normal_);
-      Eigen::Vector3d sensed_normal = contact_normal_;
-      if (force_norm > 1e-6 && force_world.dot(sensed_normal) < 0.0) {
-        sensed_normal = -sensed_normal;
-      }
-      return force_world.dot(sensed_normal);
+      return force_world.dot(contact_normal_);
     }
 
     if (force_norm < contact_force_min_threshold_) {
@@ -565,7 +561,7 @@ private:
     contact_normal_ = normal.normalized();
     tangential_dir_ = ProjectAndNormalize(tangential_dir_, contact_normal_);
 
-    return force_world.dot(contact_normal_);
+    return force_world.dot(-contact_normal_);
   }
 
   void UpdatePhaseForForce(double normal_force) {
@@ -660,7 +656,7 @@ private:
     msg.phase = static_cast<uint8_t>(PhaseToMsgValue(phase_));
     msg.normal_force = static_cast<float>(normal_force);
     msg.normal_force_target = static_cast<float>(normal_target_);
-    msg.normal_force_error = static_cast<float>(normal_force - normal_target_);
+    msg.normal_force_error = static_cast<float>(normal_force + normal_target_);
     msg.tangential_distance = static_cast<float>(tangential_distance_);
     msg.tangential_target = static_cast<float>(tangential_target_);
     msg.dwell_active = (phase_ == Phase::DWELL && state_ == RunState::RUNNING);
