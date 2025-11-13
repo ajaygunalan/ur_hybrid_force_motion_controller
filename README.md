@@ -15,10 +15,39 @@ rosdep install --from-paths src --ignore-src -r -y
 colcon build --packages-select hybrid_force_motion_controller && source install/setup.bash
 ```
 
-## Quick Navigation
-- **Phase 1 – Teleport Bring-Up:** see `phase_one_test.md`.
-- **Phase 2 – Hybrid Force-Motion Loop:** see `phase_two_test.md`.
-- **Plan/architecture:** see `plan.md`.
+
+
+## Run Sequence
+1. Launch the sim stack (replace with your hardware bringup command when on the robot)
+
+    `hybrid_force_motion_sim.launch.py` starts everything needed for simulation (UR bringup, dome, bridge, hybrid controller). Hardware bringup follows the same run sequence, but you launch your physical UR stack instead of the sim launch.
+    
+   ```bash
+   ros2 launch hybrid_force_motion_controller hybrid_force_motion_sim.launch.py ur_type:=ur5e
+   ```
+2. (Hardware) initialize equilibrium
+   ```bash
+   ros2 run ur_admittance_controller init_robot
+   ```
+3. Move the arm into the hover pose you want
+   ```bash
+   ros2 topic pub --once /scaled_joint_trajectory_controller/joint_trajectory trajectory_msgs/msg/JointTrajectory "{joint_names: ['shoulder_pan_joint','shoulder_lift_joint','elbow_joint','wrist_1_joint','wrist_2_joint','wrist_3_joint'], points: [{positions: [0.0, -1.3, 1.7, -1.9, -1.57, 0.0], time_from_start: {sec: 5}}]}"
+   ```
+4. Give the velocity controller ownership of the joints
+   ```bash
+   ros2 control switch_controllers --deactivate scaled_joint_trajectory_controller --activate forward_velocity_controller
+   ```
+5. Start the wrench pipeline (hardware) or confirm `/netft/proc_probe` is active (sim)
+   ```bash
+   ros2 run ur_admittance_controller wrench_node
+   ```
+6. Capture the start pose and run the hybrid motion
+   ```bash
+   ros2 service call /hybrid_force_motion_controller/set_start_pose std_srvs/srv/Trigger {}
+   ros2 service call /hybrid_force_motion_controller/start_motion std_srvs/srv/Trigger {}
+   ```
+Monitor `/hybrid_force_motion_controller/state`, `/netft/proc_probe`, and TF `contact_frame` while the sequence runs. Use `pause_motion`, `resume_motion`, or `stop_motion` as needed.
+
 ## Operator Interfaces
 | Type   | Name | Notes |
 |--------|------|-------|
@@ -27,7 +56,7 @@ colcon build --packages-select hybrid_force_motion_controller && source install/
 | Service | `/hybrid_force_motion_controller/pause_motion` / `/resume_motion` | Freeze and continue the current 5 cm segment; remaining distance is preserved while the 5 N load hold stays active. |
 | Service | `/hybrid_force_motion_controller/stop_motion` | Aborts the run, zeros the tangential distance accumulator, and requires `set_start_pose` before another start (the next run always performs a fresh 5 cm). |
 | Topic | `/scaled_joint_trajectory_controller/joint_trajectory` | Publish a one-shot joint array to “teleport” the UR arm before running the controller. |
-| Topic | `/hybrid_force_motion_controller/state` | Finite-state-machine status, tangential progress, PI error, fault flags. |
+| Topic | `/hybrid_force_motion_controller/state` (`HybridForceMotionState`) | Finite-state-machine status, tangential progress, PI band info, pause/fault flags. |
 | Topic | `/hybrid_force_motion_controller/direction` (`geometry_msgs/Vector3`, optional) | Live override for tangential direction hint. |
 | TF | `contact_frame` | Published each control cycle for RViz verification (normal = Z-axis). |
 

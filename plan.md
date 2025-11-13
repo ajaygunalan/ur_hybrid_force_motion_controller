@@ -3,14 +3,14 @@
 ## 1. High-Level Objectives
 - Deliver a ROS 2 velocity-space hybrid force/motion controller (`hybrid_force_motion_controller`) that commands 3-DOF Cartesian velocity (x, y, z) while holding a 5 N normal force and executing a 5 cm tangential slide on a movable 9 cm hemisphere.
 - Reuse the existing `ur_admittance_controller` wrench pipeline (`/netft/proc_probe`) so gravity/bias compensation stays centralized; integrate cleanly with UR bringup via `forward_velocity_controller`.
-- Keep the workflow identical between hardware and simulation after the operator captures a start pose; only the "get into contact" step differs (teleport utilities vs. manual jogging).
+- Keep the workflow identical between hardware and simulation after the operator captures a start pose; the only difference is how you drive into the hover pose (joint teleport command in sim vs. manual jog on hardware).
 
 ## 2. System Architecture (Mid-Level View)
 1. **Package layout**
    - `include/hybrid_force_motion_controller/` — main node + helper classes (parameters, state machine, Jacobian utilities).
    - `src/hybrid_force_motion_node.cpp` — executes the control loop, TF logic, operator services.
    - `config/hybrid_force_motion_config.yaml` — gains (normal PI with soft-start, tangential P), limits, thresholds, frame names.
-   - `launch/hybrid_force_motion_sim.launch.py` / `hybrid_force_motion_hw.launch.py` — orchestrate sim/hardware stacks; simulation relies on CLI helpers (`gz set_pose` + `/scaled_joint_trajectory_controller/joint_trajectory` publish) instead of extra teleport nodes.
+   - `launch/hybrid_force_motion_sim.launch.py` — launches UR Gazebo, the dome world, the bridge service, and the hybrid controller. Hardware runs the same node after your standard UR bringup.
    - `reference/friction_normal_estimator.md` — keeps the friction-aware normal math (migrated from `Untitled.md`).
 2. **External dependencies** — `rclcpp`, `rclcpp_components`, `geometry_msgs`, `sensor_msgs`, `std_msgs`, `std_srvs`, `tf2_ros`, `tf2_geometry_msgs`, `tf2_eigen`, `Eigen3`, `kdl_parser`, `urdfdom`, and direct include access to `ur_admittance_controller` headers for shared constants.
 3. **Runtime nodes**
@@ -18,30 +18,30 @@
    - `hybrid_force_motion_node` subscribes to `/netft/proc_probe`, `/joint_states`, TF, and optional `/hybrid_force_motion_controller/direction`; publishes `/forward_velocity_controller/commands`, `tf` contact frame, and a diagnostic topic `/hybrid_force_motion_controller/state`.
    - Simulation helpers: CLI commands only (`gz service /world/<world>/set_pose` for the dome and `ros2 topic pub --once /scaled_joint_trajectory_controller/joint_trajectory ...` for joint presets). No dedicated teleporter nodes remain.
 
-## 3. Implementation Phases & Tests (Build Pipeline)
-1. **Phase 1 — Environment & Teleport Bring-Up**
-   - Deliverables:
-     - Gazebo world file `worlds/contact_dome.sdf` bundled with `teleport_bringup.launch.py`, which includes `ur_simulation_gz/ur_sim_control.launch.py` so URDF + dome spawn together.
-     - Command-line recipe (`gz service -s /world/<world>/set_pose ...`) for moving the dome instantly during simulation bring-up—no ROS node required.
-     - Copy/paste command for `ros2 topic pub --once /scaled_joint_trajectory_controller/joint_trajectory ...` so the UR arm can be snapped into contact by editing joint angles inline (no runtime IK).
-   - Test 1 checklist:
-     1. `ros2 launch ur_simulation_gz ur_sim_control.launch.py ...` brings up the URDF+world without errors; dome is visible in RViz/Gazebo.
-     2. Calling `gz service -s /world/contact_dome/set_pose ...` updates the dome pose, confirmed via RViz TF or Gazebo GUI.
-     3. Publishing to `/scaled_joint_trajectory_controller/joint_trajectory` places the arm exactly at the requested joint pose (verified by TF and joint state echo).
-     4. No hybrid controller running yet; success = manual/teleport contact achieved repeatedly.
-2. **Phase 2 — Contact Seek + Tangential Traverse**
-   - Behavior: `start_motion` commands pure +Z velocity until the measured normal force reaches 5 N ± 0.2 N. The PI loop still uses the configurable soft-start, and the controller holds the load inside the band for ~1 s before any XY motion begins—no operator pause is required for this dwell.
-   - Tangential move: once the dwell finishes, XY velocity is projected into the live tangent plane and integrated until exactly 0.05 m of displacement accumulates. Every `start_motion` call executes a fresh 5 cm segment, `pause_motion`/`resume_motion` finish the remaining distance, and `stop_motion` resets progress to zero so the next start performs a full 5 cm again.
-   - Unknown surfaces: each control cycle fuses the current velocity with the sensed wrench using the friction-normal estimator from `reference/friction_normal_estimator.md`, yielding a contact frame whose Z-axis is the corrected surface normal. The tangential command is recomputed inside this frame, so curvature or height variations simply tilt the frame while Z-regulation maintains the load.
-   - Deliverables: controller node, services, TF publication of the contact frame, progress/force diagnostics, and log hooks that prove the ±0.2 N window, dwell timer, and 5 cm counter behave deterministically.
-   - Test 2 checklist:
-     1. Launch the stack, call `set_start_pose`, then `start_motion`; confirm RUNNING is announced only when the force enters 5 N ± 0.2 N and that the 1 s dwell completes before XY velocity appears.
-     2. Watch `/hybrid_force_motion_controller/state` or the CLI helper to see tangential displacement clamp at 0.05 m per run; issue `pause_motion`/`resume_motion` to verify remaining-distance handling and `stop_motion` to confirm the counter resets.
-     3. Jog the robot to drop the force below the disengage threshold and ensure the controller falls back to the Z-press logic, re-establishes the load, and resumes the tangential path (or enters `FAULT` if contact is lost too long).
-     4. Inspect the TF `contact_frame` or the estimator status topic to verify the normal and probe orientation stay aligned while traversing curved sections.
-3. **Future phases (scoped but not yet scheduled)** — null-space orientation optimizer, automated pose sequencer, additional hardware soak tests. These inherit from the first two phases but are not required before initial delivery.
-
-This phased approach keeps the build linear: Phase 1 must pass before Phase 2 starts, mirroring the methodology used in `ur_admittance_controller` (URDF bring-up → wrench pipeline → controller).
+## 3. End-to-End Test Checklist
+- Launch the unified bringup (UR sim + dome + hybrid controller) using
+  ```bash
+  ros2 launch hybrid_force_motion_controller hybrid_force_motion_sim.launch.py ur_type:=ur5e
+  ```
+- Publish the joint teleport command to drop the arm into contact:
+  ```bash
+  ros2 topic pub --once /scaled_joint_trajectory_controller/joint_trajectory trajectory_msgs/msg/JointTrajectory "{joint_names: ['shoulder_pan_joint','shoulder_lift_joint','elbow_joint','wrist_1_joint','wrist_2_joint','wrist_3_joint'], points: [{positions: [0.0, -1.3, 1.7, -1.9, -1.57, 0.0], time_from_start: {sec: 5}}]}"
+  ```
+- Switch controllers so `forward_velocity_controller` owns the joints:
+  ```bash
+  ros2 control switch_controllers --deactivate scaled_joint_trajectory_controller --activate forward_velocity_controller
+  ```
+- Run wrench compensation and initialize the robot equilibrium:
+  ```bash
+  ros2 run ur_admittance_controller init_robot
+  ros2 run ur_admittance_controller wrench_node
+  ```
+- Capture the start pose and start the hybrid motion:
+  ```bash
+  ros2 service call /hybrid_force_motion_controller/set_start_pose std_srvs/srv/Trigger {}
+  ros2 service call /hybrid_force_motion_controller/start_motion std_srvs/srv/Trigger {}
+  ```
+- Monitor `/hybrid_force_motion_controller/state`, `/netft/proc_probe`, and TF `contact_frame` to confirm the +Z seek, 1 s dwell, and 5 cm tangential traverse complete without intervention. Exercise `pause_motion`, `resume_motion`, and `stop_motion` to verify tangential distance handling and FAULT recovery.
 
 ## 4. Detailed Design
 

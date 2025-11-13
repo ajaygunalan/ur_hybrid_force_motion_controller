@@ -1,0 +1,40 @@
+hybrid_force_motion_controller:
+  ros__parameters:
+    control_frequency_hz: 250.0
+    base_link: base_link
+    tool_link: p42v_link1
+    joint_names: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint, wrist_1_joint, wrist_2_joint, wrist_3_joint]
+
+    search_direction: [0.0, 0.0, -1.0]
+    tangential_direction_hint: [1.0, 0.0, 0.0]
+
+    tangential_distance_m: 0.05
+    tangential_gain: 1.0
+    tangential_speed_mps: 0.01
+
+    dwell_time_s: 1.0
+
+    normal:
+      target_N: 5.0
+      tolerance_N: 0.2
+      kp: 0.6
+      ki: 4.0
+      max_velocity_mps: 0.01
+      softstart_time_s: 0.7
+
+    disengage_force_threshold_N: 2.0
+    disengage_count: 30
+
+    estimator:
+      enable: true
+      alpha: 0.15
+      min_speed_mps: 0.001
+
+    velocity_limits:
+      linear_mps: 0.05
+      angular_radps: 0.5
+
+    joint_velocity_limits: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+
+    publish_contact_frame: true
+    contact_frame_id: contact_frame

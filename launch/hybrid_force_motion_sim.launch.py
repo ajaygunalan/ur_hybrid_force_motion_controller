@@ -8,12 +8,14 @@ import os
 
 
 def generate_launch_description():
-    ur_sim_pkg = get_package_share_directory('ur_simulation_gz')
     hfmc_pkg = get_package_share_directory('hybrid_force_motion_controller')
+    ur_sim_pkg = get_package_share_directory('ur_simulation_gz')
 
-    ur_type_arg = DeclareLaunchArgument('ur_type', default_value='ur5e')
+    controller_cfg = os.path.join(hfmc_pkg, 'config', 'controller.yaml')
     world_name = 'contact_dome'
     world_path = os.path.join(hfmc_pkg, 'worlds', f'{world_name}.sdf')
+
+    ur_type_arg = DeclareLaunchArgument('ur_type', default_value='ur5e')
 
     existing_resource_path = os.environ.get('IGN_GAZEBO_RESOURCE_PATH', '')
     new_resource_path = hfmc_pkg if not existing_resource_path else f"{hfmc_pkg}:{existing_resource_path}"
@@ -35,10 +37,18 @@ def generate_launch_description():
             f'/world/{world_name}/set_entity_pose@ros_gz_interfaces/srv/SetEntityPose',
         ])
 
+    controller_node = Node(
+        package='hybrid_force_motion_controller',
+        executable='hybrid_force_motion_node',
+        name='hybrid_force_motion_controller',
+        output='screen',
+        parameters=[controller_cfg])
+
     return LaunchDescription([
         ur_type_arg,
         SetEnvironmentVariable('IGN_GAZEBO_RESOURCE_PATH', new_resource_path),
         SetEnvironmentVariable('GZ_SIM_RESOURCE_PATH', new_gz_path),
         ur_launch,
         service_bridge,
+        controller_node,
     ])
