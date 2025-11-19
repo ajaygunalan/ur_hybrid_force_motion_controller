@@ -21,7 +21,8 @@
    - Simulation helpers: CLI commands only (`gz service /world/<world>/set_pose` for the dome and `ros2 topic pub --once /scaled_joint_trajectory_controller/joint_trajectory ...` for joint presets). No dedicated teleporter nodes remain.
 
 ## 3. End-to-End Test Checklist
-- Launch the unified bringup (UR sim + dome + hybrid controller) using
+### Simulation
+- Launch UR sim + dome + hybrid stack  
   ```bash
   ros2 launch hybrid_force_motion_controller hybrid_force_motion_sim.launch.py ur_type:=ur5e
   ```
@@ -33,17 +34,26 @@
   ```bash
   ros2 control switch_controllers --deactivate scaled_joint_trajectory_controller --activate forward_velocity_controller
   ```
-- Run wrench compensation and initialize the robot equilibrium:
-  ```bash
-  ros2 run ur_admittance_controller init_robot
-  ros2 run ur_admittance_controller wrench_node
-  ```
-- Capture the start pose and start the hybrid motion:
+- Capture the start pose and run:
   ```bash
   ros2 service call /hybrid_force_motion_controller/set_start_pose std_srvs/srv/Trigger {}
   ros2 service call /hybrid_force_motion_controller/start_motion std_srvs/srv/Trigger {}
   ```
-- Monitor `/hybrid_force_motion_controller/state`, `/netft/proc_probe`, and TF `contact_frame` to confirm the +Z seek, 1 s dwell, and 5 cm tangential traverse complete without intervention. Exercise `pause_motion`, `resume_motion`, and `stop_motion` to verify tangential distance handling and FAULT recovery.
+- Monitor `/hybrid_force_motion_controller/state`, `/netft/proc_base`, and TF `contact_frame` to confirm the −Z seek, 1 s dwell, and 5 cm tangential traverse complete. Exercise `pause_motion`, `resume_motion`, and `stop_motion` to verify tangential distance handling and FAULT recovery.
+
+### Hardware
+- Bring up UR driver and sensor TF tree (`ur_hardware_bringup.launch.py`) and start the NetFT driver + `ur_admittance_controller` wrench node.
+- Verify `/netft/proc_base`, `/joint_states`, and `/forward_velocity_controller/commands` topics exist; switch controllers only when `/forward_velocity_controller/commands` has zero publishers.
+- Launch the hybrid stack:
+  ```bash
+  ros2 launch hybrid_force_motion_controller hybrid_force_motion_hardware.launch.py
+  ```
+- Jog to the desired hover pose, then:
+  ```bash
+  ros2 service call /hybrid_force_motion_controller/set_start_pose std_srvs/srv/Trigger {}
+  ros2 service call /hybrid_force_motion_controller/start_motion std_srvs/srv/Trigger {}
+  ```
+- Watch `/hybrid_force_motion_controller/state`, `/netft/proc_base`, and `/hybrid_force_motion_controller/twist_cmd`. Keep an e-stop ready; kill the launch or run `/hybrid_force_motion_controller/stop_motion` if the path deviates. The Cartesian velocity controller zeros commands automatically if the twist stream stops for `twist_timeout_s` seconds.
 
 ## 4. Detailed Design
 

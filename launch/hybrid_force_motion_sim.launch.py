@@ -12,6 +12,7 @@ def generate_launch_description():
     ur_sim_pkg = get_package_share_directory('ur_simulation_gz')
 
     controller_cfg = os.path.join(hfmc_pkg, 'config', 'controller.yaml')
+    rviz_cfg = os.path.join(hfmc_pkg, 'config', 'hybrid_force_motion_sim.rviz')
     world_name = 'contact_dome'
     world_path = os.path.join(hfmc_pkg, 'worlds', f'{world_name}.sdf')
 
@@ -27,6 +28,7 @@ def generate_launch_description():
         launch_arguments={
             'ur_type': LaunchConfiguration('ur_type'),
             'world_file': world_path,
+            'rviz_config_file': rviz_cfg,
         }.items())
 
     service_bridge = Node(

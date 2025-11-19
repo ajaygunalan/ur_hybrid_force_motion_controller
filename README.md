@@ -4,7 +4,7 @@ Hybrid force-motion velocity controller that reuses the `ur_admittance_controlle
 
 > **Status**: design frozen (see `plan.md` for architecture, `reference/friction_normal_estimator.md` for the surface-normal math). This README focuses on operator workflow.
 
-## Repository Setup
+## Setup
 ```bash
 mkdir -p ~/ros2_ws/src && cd ~/ros2_ws/src
 git clone https://github.com/ajaygunalan/ur_simulation_gz.git
@@ -15,38 +15,103 @@ rosdep install --from-paths src --ignore-src -r -y
 colcon build --packages-select hybrid_force_motion_controller && source install/setup.bash
 ```
 
+For hardware, also build the NetFT stack as in `ur_admittance_controller/README.md`:
+```bash
+colcon build --packages-select netft_utils netft_interfaces
+```
 
+## Usage
 
-## Run Sequence
-1. Launch the sim stack (replace with your hardware bringup command when on the robot)
+### Simulation
 
-    `hybrid_force_motion_sim.launch.py` starts everything needed for simulation (UR bringup, dome, bridge, the hybrid force-motion node, and the new Cartesian velocity controller). Hardware bringup follows the same run sequence, but you launch your physical UR stack instead of the sim launch.
-    
+1. Launch the sim stack  
+   `hybrid_force_motion_sim.launch.py` starts UR Gazebo, the dome world, the bridge, the hybrid node, and the Cartesian velocity controller.  
    ```bash
    ros2 launch hybrid_force_motion_controller hybrid_force_motion_sim.launch.py ur_type:=ur5e
    ```
-2. (Hardware) initialize equilibrium
-   ```bash
-   ros2 run ur_admittance_controller init_robot
-   ```
-3. Move the arm into the hover pose you want
-   ```bash
-   ros2 topic pub --once /scaled_joint_trajectory_controller/joint_trajectory trajectory_msgs/msg/JointTrajectory "{joint_names: ['shoulder_pan_joint','shoulder_lift_joint','elbow_joint','wrist_1_joint','wrist_2_joint','wrist_3_joint'], points: [{positions: [0.0, -1.3, 1.7, -1.9, -1.57, 0.0], time_from_start: {sec: 5}}]}"
-   ```
-4. Give the velocity controller ownership of the joints
-   ```bash
-   ros2 control switch_controllers --deactivate scaled_joint_trajectory_controller --activate forward_velocity_controller
-   ```
-5. Start the wrench pipeline (hardware) or confirm `/netft/proc_probe` is active (sim)
+2. Start the wrench pipeline (new terminal)  
+   Gazebo publishes `/netft/raw_sensor`; the wrench node produces the compensated topics including `/netft/proc_base` used by the hybrid controller.  
    ```bash
    ros2 run ur_admittance_controller wrench_node
    ```
-6. Capture the start pose and run the hybrid motion
+3. Move the arm into the hover pose you want  
+   ```bash
+   ros2 topic pub --once /scaled_joint_trajectory_controller/joint_trajectory trajectory_msgs/msg/JointTrajectory "{joint_names: ['shoulder_pan_joint','shoulder_lift_joint','elbow_joint','wrist_1_joint','wrist_2_joint','wrist_3_joint'], points: [{positions: [0.0, -1.3, 1.7, -1.9, -1.57, 0.0], time_from_start: {sec: 5}}]}"
+   ```
+4. Give the velocity controller ownership of the joints  
+   ```bash
+   ros2 control switch_controllers --deactivate scaled_joint_trajectory_controller --activate forward_velocity_controller
+   ```
+5. Capture the start pose and run the hybrid motion  
    ```bash
    ros2 service call /hybrid_force_motion_controller/set_start_pose std_srvs/srv/Trigger {}
    ros2 service call /hybrid_force_motion_controller/start_motion std_srvs/srv/Trigger {}
    ```
-Monitor `/hybrid_force_motion_controller/state`, `/netft/proc_probe`, and TF `contact_frame` while the sequence runs. Use `pause_motion`, `resume_motion`, or `stop_motion` as needed.
+Monitor `/hybrid_force_motion_controller/state`, `/netft/proc_base` (or `/netft/proc_probe` for probe-frame forces), and TF `contact_frame` while the sequence runs. Use `pause_motion`, `resume_motion`, or `stop_motion` as needed.
+
+### Hardware Bringup
+
+Prerequisites (same as `ur_admittance_controller`):
+- [Universal_Robots_ROS2_Driver](https://github.com/UniversalRobots/Universal_Robots_ROS2_Driver)
+- [netft_utils](https://github.com/ajaygunalan/netft_utils)
+- Real-time or low-latency kernel
+
+Network (example):
+
+| Device       | IP Address       |
+|-------------|------------------|
+| F/T Sensor  | 169.254.120.10   |
+| UR5e        | 169.254.120.1    |
+| Robo Laptop | 169.254.120.200  |
+
+Subnet: `255.255.255.0` (verify with `ping 169.254.120.1`).  
+Assumes you have already run UR calibration and wrench calibration as in `ur_admittance_controller/README.md`.
+
+#### Daily Operation (Hardware)
+
+Terminal 1 – UR driver + TF tree:
+```bash
+ros2 launch ur_admittance_controller ur_hardware_bringup.launch.py \
+  robot_ip:=169.254.120.1 \
+  kinematics_params_file:=$HOME/ur5e_calibration.yaml
+```
+On the teach pendant: load and play “External Control”.
+
+Terminal 2 – F/T sensor driver:
+```bash
+ros2 run netft_utils netft_node --address 169.254.120.10 --frame_id netft_link1
+```
+
+Terminal 3 – Equilibrium / hover pose (optional per session):
+```bash
+ros2 run ur_admittance_controller init_robot
+```
+Then jog the arm into the hover/approach pose you want.
+
+Terminal 4 – Wrench pipeline (gravity/bias compensation to `/netft/proc_base`):
+```bash
+ros2 run ur_admittance_controller wrench_node
+```
+
+Terminal 5 – Give `forward_velocity_controller` ownership of the joints:
+```bash
+ros2 topic info -v /forward_velocity_controller/commands  # MUST show 0 publishers
+ros2 control switch_controllers \
+  --deactivate scaled_joint_trajectory_controller \
+  --activate forward_velocity_controller
+```
+
+Terminal 6 – Hybrid controller stack:
+```bash
+ros2 launch hybrid_force_motion_controller hybrid_force_motion_hardware.launch.py
+```
+
+Any terminal – Run the hybrid motion:
+```bash
+ros2 service call /hybrid_force_motion_controller/set_start_pose std_srvs/srv/Trigger {}
+ros2 service call /hybrid_force_motion_controller/start_motion std_srvs/srv/Trigger {}
+```
+Monitor `/hybrid_force_motion_controller/state`, `/netft/proc_base`, `/hybrid_force_motion_controller/twist_cmd`, and `/forward_velocity_controller/commands`. Keep an e-stop handy; call `/hybrid_force_motion_controller/stop_motion` or kill the launch if anything deviates. The Cartesian velocity controller times out (`twist_timeout_s`, default 0.1 s) and zeros joint commands if the hybrid node stops publishing.
 
 ## Operator Interfaces
 | Type   | Name | Notes |
@@ -76,4 +141,4 @@ Monitor `/hybrid_force_motion_controller/state`, `/netft/proc_probe`, and TF `co
 - `plan.md` — full architecture, PI/contact-loss/FAULT logic, and validation plan.
 - `reference/friction_normal_estimator.md` — derivation of the friction-aware surface-normal estimator adopted from the cited literature.
 
-Once you’re comfortable with this workflow, we’ll implement the package, launch files, and helpers exactly as described.
+This package implements the workflow described above; tune gains and limits in `config/controller.yaml` as needed.
