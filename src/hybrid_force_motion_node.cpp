@@ -240,9 +240,9 @@ private:
   }
 
   void SetupInterfaces() {
-    auto sensor_qos = rclcpp::SensorDataQoS();
+    auto reliable_qos = rclcpp::QoS(10).reliable();
     wrench_sub_ = create_subscription<geometry_msgs::msg::WrenchStamped>(
-        "/netft/proc_base", sensor_qos,
+        "/netft/proc_base", reliable_qos,
         std::bind(&HybridForceMotionNode::OnWrench, this, std::placeholders::_1));
     joint_state_sub_ = create_subscription<sensor_msgs::msg::JointState>(
         "/joint_states", 20,

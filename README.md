@@ -25,14 +25,14 @@ colcon build --packages-select netft_utils netft_interfaces
 ### Simulation
 
 1. Launch the sim stack  
-   `hybrid_force_motion_sim.launch.py` starts UR Gazebo, the dome world, the bridge, the hybrid node, and the Cartesian velocity controller.  
+   `hybrid_force_motion_sim.launch.py` starts UR Gazebo, the dome world, the bridge, the wrench pipeline (`wrench_node`), the hybrid node, and the Cartesian velocity controller.  
    ```bash
    ros2 launch hybrid_force_motion_controller hybrid_force_motion_sim.launch.py ur_type:=ur5e
    ```
-2. Start the wrench pipeline (new terminal)  
-   Gazebo publishes `/netft/raw_sensor`; the wrench node produces the compensated topics including `/netft/proc_base` used by the hybrid controller.  
+2. Initialize the equilibrium / hover pose (new terminal)  
+   This runs the same `init_robot` helper used on hardware, setting a reasonable equilibrium pose for the wrench pipeline before you move the arm.  
    ```bash
-   ros2 run ur_admittance_controller wrench_node
+   ros2 run ur_admittance_controller init_robot
    ```
 3. Move the arm into the hover pose you want  
    ```bash
