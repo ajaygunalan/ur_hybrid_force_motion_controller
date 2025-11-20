@@ -45,6 +45,9 @@ colcon build --packages-select netft_utils netft_interfaces
 5. Capture the start pose and run the hybrid motion  
    ```bash
    ros2 service call /hybrid_force_motion_controller/set_start_pose std_srvs/srv/Trigger {}
+   ```
+   Then start the motion:
+   ```bash
    ros2 service call /hybrid_force_motion_controller/start_motion std_srvs/srv/Trigger {}
    ```
 Monitor `/hybrid_force_motion_controller/state`, `/netft/proc_base` (or `/netft/proc_probe` for probe-frame forces), and TF `contact_frame` while the sequence runs. Use `pause_motion`, `resume_motion`, or `stop_motion` as needed.
