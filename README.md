@@ -109,6 +109,9 @@ ros2 launch hybrid_force_motion_controller hybrid_force_motion_hardware.launch.p
 Any terminal – Run the hybrid motion:
 ```bash
 ros2 service call /hybrid_force_motion_controller/set_start_pose std_srvs/srv/Trigger {}
+```
+Then start the motion:
+```bash
 ros2 service call /hybrid_force_motion_controller/start_motion std_srvs/srv/Trigger {}
 ```
 Monitor `/hybrid_force_motion_controller/state`, `/netft/proc_base`, `/hybrid_force_motion_controller/twist_cmd`, and `/forward_velocity_controller/commands`. Keep an e-stop handy; call `/hybrid_force_motion_controller/stop_motion` or kill the launch if anything deviates. The Cartesian velocity controller times out (`twist_timeout_s`, default 0.1 s) and zeros joint commands if the hybrid node stops publishing.
