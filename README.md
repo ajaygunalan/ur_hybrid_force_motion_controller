@@ -151,10 +151,12 @@ To inspect the robot, wrench, twist, and controller internals in 3D + time serie
    ```
 
 The Rerun viewer will show:
-- TF frames (`base_link`, joints, `contact_frame`) as 3D frames under `world/...`
+- The full UR5e robot mesh (loaded from `ur_simulation_gz`’s xacro) animated by TF under `world/...`
+- TF frames (`base_link`, joints, `contact_frame`) as 3D frames
 - `/netft/proc_base` wrench as a 3D arrow plus Fx/Fy/Fz time series
 - `/hybrid_force_motion_controller/twist_cmd` linear/Angular twist arrows and speeds
-- `/hybrid_force_motion_controller/state` (normal force, tangential distance, FSM state/phase, dwell/paused/fault flags and reason) as aligned plots.
+- `/hybrid_force_motion_controller/state` (normal force, tangential distance, FSM state/phase, dwell/paused/fault flags and reason) as aligned plots
+- A 3D path trace of the TCP and explicit normal/tangential arrows at `contact_frame` useful for verifying the 5 cm slide and surface-normal alignment.
 
 ## Operator Interfaces
 | Type   | Name | Notes |
