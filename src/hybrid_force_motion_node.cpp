@@ -445,8 +445,19 @@ private:
     Eigen::Vector3d linear_world = Eigen::Vector3d::Zero();
     bool command_active = ComputeLinearCommand(normal_force, linear_world);
 
+    Eigen::Vector3d angular_world = Eigen::Vector3d::Zero();
+    const bool in_contact_for_orientation =
+        (normal_force > min_normal_for_alignment_N_);
+
+    if (orientation_align_enabled_ &&
+        in_contact_for_orientation &&
+        state_ == RunState::RUNNING &&
+        phase_ == Phase::TANGENTIAL) {
+      angular_world = ComputeOrientationVelocity();
+    }
+
     if (command_active) {
-      PublishTwistCommand(linear_world);
+      PublishTwistCommand(linear_world, angular_world);
     } else {
       PublishZeroTwist();
     }
@@ -500,9 +511,11 @@ private:
     return true;
   }
 
-  void PublishTwistCommand(const Eigen::Vector3d& linear_world) {
+  void PublishTwistCommand(const Eigen::Vector3d& linear_world,
+                           const Eigen::Vector3d& angular_world) {
     Eigen::Matrix<double, 6, 1> twist = Eigen::Matrix<double, 6, 1>::Zero();
     twist.head<3>() = linear_world;
+    twist.tail<3>() = angular_world;
     last_twist_cmd_ = twist;
 
     twist_msg_.header.stamp = now();
@@ -521,20 +534,26 @@ private:
     if (phase_ != Phase::TANGENTIAL) {
       contact_normal_ = search_direction_;
       tangential_dir_ = ProjectAndNormalize(tangential_dir_, contact_normal_);
-      return force_world.dot(contact_normal_);
+      return force_world.dot(-contact_normal_);
     }
 
     if (force_norm < contact_force_min_threshold_) {
-      return force_world.dot(contact_normal_);
+      return force_world.dot(-contact_normal_);
     }
 
     Eigen::Vector3d normal = contact_normal_;
     double tangential_speed = std::abs(last_twist_cmd_.head<3>().dot(tangential_dir_));
     if (estimator_enabled_ &&
         tangential_speed > estimator_min_speed_) {
-      Eigen::Vector3d v_hat = (last_twist_cmd_.head<3>().dot(tangential_dir_) >= 0.0)
-                                  ? tangential_dir_
-                                  : -tangential_dir_;
+      Eigen::Vector3d v = last_twist_cmd_.head<3>();
+      Eigen::Vector3d v_hat;
+      if (v.norm() > 1e-6) {
+        v_hat = v.normalized();
+      } else {
+        v_hat = (last_twist_cmd_.head<3>().dot(tangential_dir_) >= 0.0)
+                    ? tangential_dir_
+                    : -tangential_dir_;
+      }
       double f_parallel = force_world.dot(v_hat);
       Eigen::Vector3d f_v = f_parallel * v_hat;
       Eigen::Vector3d f_perp = force_world - f_v;
@@ -559,9 +578,53 @@ private:
       normal = -normal;
     }
     contact_normal_ = normal.normalized();
-    tangential_dir_ = ProjectAndNormalize(tangential_dir_, contact_normal_);
+
+    Eigen::Vector3d path_dir = direction_hint_;
+    if (path_dir.norm() < 1e-6) {
+      path_dir = tangential_dir_;
+    }
+    tangential_dir_ = ProjectAndNormalize(path_dir, contact_normal_);
 
     return force_world.dot(-contact_normal_);
+  }
+
+  Eigen::Matrix3d DesiredContactRotation() const {
+    Eigen::Vector3d z = contact_normal_;
+    Eigen::Vector3d x = tangential_dir_;
+    Eigen::Vector3d y = z.cross(x).normalized();
+    x = y.cross(z).normalized();
+
+    Eigen::Matrix3d R;
+    R.col(0) = x;
+    R.col(1) = y;
+    R.col(2) = z;
+    return R;
+  }
+
+  Eigen::Vector3d ComputeOrientationVelocity() const {
+    Eigen::Matrix3d R_des = DesiredContactRotation();
+    Eigen::Matrix3d R_cur = current_pose_.linear();
+
+    Eigen::Matrix3d R_err = R_des * R_cur.transpose();
+    Eigen::AngleAxisd aa(R_err);
+
+    double angle = aa.angle();
+    if (angle > M_PI) {
+      angle -= 2.0 * M_PI;
+    }
+
+    if (std::abs(angle) < 1e-4) {
+      return Eigen::Vector3d::Zero();
+    }
+
+    Eigen::Vector3d axis = aa.axis();
+    Eigen::Vector3d omega = orientation_kp_ * angle * axis;
+
+    double norm = omega.norm();
+    if (norm > max_orientation_speed_) {
+      omega *= (max_orientation_speed_ / std::max(norm, 1e-9));
+    }
+    return omega;
   }
 
   void UpdatePhaseForForce(double normal_force) {
@@ -581,8 +644,17 @@ private:
       } else {
         disengage_counter_ = 0;
       }
+
+      if (normal_force > max_normal_force_N_) {
+        if (++max_force_violation_count_ >= max_force_violation_limit_) {
+          EnterFault("FORCE_LIMIT");
+        }
+      } else {
+        max_force_violation_count_ = 0;
+      }
     } else {
       disengage_counter_ = 0;
+      max_force_violation_count_ = 0;
     }
   }
 
@@ -642,8 +714,10 @@ private:
     last_tool_position_ = current;
 
     if (state_ == RunState::RUNNING && phase_ == Phase::TANGENTIAL) {
-      double projection = delta.dot(tangential_dir_);
-      tangential_distance_ = std::max(0.0, tangential_distance_ + projection);
+      // Measure total path length in the base XY plane from the tangential start
+      delta.z() = 0.0;
+      const double step = delta.head<2>().norm();
+      tangential_distance_ += step;
     }
   }
 
@@ -779,6 +853,10 @@ private:
   int disengage_count_limit_{30};
   int disengage_counter_{0};
 
+  double max_normal_force_N_{20.0};
+  int max_force_violation_limit_{10};
+  int max_force_violation_count_{0};
+
   bool estimator_enabled_{true};
   double estimator_alpha_{0.15};
   double estimator_min_speed_{0.001};
@@ -793,6 +871,12 @@ private:
   std::string fault_reason_;
 
   Eigen::Matrix<double, 6, 1> last_twist_cmd_;
+
+  // Orientation alignment (tool pose → contact frame) - constants kept in code
+  bool orientation_align_enabled_{true};
+  double orientation_kp_{3.0};
+  double max_orientation_speed_{0.5};       // rad/s
+  double min_normal_for_alignment_N_{1.0};  // only align when clearly in contact
 
   // ROS entities
   rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr wrench_sub_;

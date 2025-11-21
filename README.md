@@ -119,6 +119,43 @@ ros2 service call /hybrid_force_motion_controller/start_motion std_srvs/srv/Trig
 ```
 Monitor `/hybrid_force_motion_controller/state`, `/netft/proc_base`, `/hybrid_force_motion_controller/twist_cmd`, and `/forward_velocity_controller/commands`. Keep an e-stop handy; call `/hybrid_force_motion_controller/stop_motion` or kill the launch if anything deviates. The Cartesian velocity controller times out (`twist_timeout_s`, default 0.1 s) and zeros joint commands if the hybrid node stops publishing.
 
+## Visualization with Rerun (optional)
+
+To inspect the robot, wrench, twist, and controller internals in 3D + time series, a lightweight Rerun bridge is provided in `scripts/rerun_viz.py`.
+
+1. Create a Python venv in the workspace root (once):
+   ```bash
+   cd ~/ros2_ws
+   python3 -m venv rerun_venv
+   source rerun_venv/bin/activate
+   pip install --upgrade pip
+   pip install rerun-sdk numpy pyyaml
+   ```
+   (Do not activate this venv when running `colcon build`.)
+
+2. Run the sim stack (Terminal 1):
+   ```bash
+   cd ~/ros2_ws
+   source /opt/ros/jazzy/setup.bash
+   source install/setup.bash
+   ros2 launch hybrid_force_motion_controller hybrid_force_motion_sim.launch.py ur_type:=ur5e
+   ```
+
+3. Run the Rerun visualizer (Terminal 2):
+   ```bash
+   cd ~/ros2_ws
+   source rerun_venv/bin/activate
+   source /opt/ros/jazzy/setup.bash
+   source install/setup.bash
+   python3 src/hybrid_force_motion_controller/scripts/rerun_viz.py
+   ```
+
+The Rerun viewer will show:
+- TF frames (`base_link`, joints, `contact_frame`) as 3D frames under `world/...`
+- `/netft/proc_base` wrench as a 3D arrow plus Fx/Fy/Fz time series
+- `/hybrid_force_motion_controller/twist_cmd` linear/Angular twist arrows and speeds
+- `/hybrid_force_motion_controller/state` (normal force, tangential distance, FSM state/phase, dwell/paused/fault flags and reason) as aligned plots.
+
 ## Operator Interfaces
 | Type   | Name | Notes |
 |--------|------|-------|
@@ -137,8 +174,8 @@ Monitor `/hybrid_force_motion_controller/state`, `/netft/proc_base`, `/hybrid_fo
 - Tangential velocity is recomputed every cycle inside the contact frame supplied by the friction-normal estimator (see `reference/friction_normal_estimator.md`), so unknown curvature simply tilts the frame while the probe orientation stays aligned.
 - `contact_force_min_threshold_N` (default 0.1 N) gates the friction-aware normal estimator; raise it (e.g., to 1–2 N) if you want reorientation to happen only once a firm contact load is present. The estimator also requires a minimum tangential sliding speed, so it ignores dithering along the normal axis.
 - `cartesian_velocity_controller` listens to `/hybrid_force_motion_controller/twist_cmd`, re-applies the Cartesian and joint velocity limits once (in base_link), and pushes `/forward_velocity_controller/commands`, so you can inspect the twist topic directly if you need to debug motions.
-- Tangential progress is measured from the actual end-effector pose (projected along the live tangential axis), so the logged `tangential_distance` reflects what the tool really did, not just what was commanded.
-- Each `start_motion` integrates exactly 0.05 m of tangential distance; `pause_motion`/`resume_motion` finish the remaining distance, while `stop_motion` resets the counter so the next run performs a full 5 cm.
+- Tangential progress is measured as total ground-plane (base X–Y) path length from the point where the tangential phase starts; the logged `tangential_distance` reflects how far the tool has actually moved in the base frame, independent of surface curvature.
+- Each `start_motion` integrates exactly 0.05 m of tangential ground-plane distance; `pause_motion`/`resume_motion` finish the remaining distance, while `stop_motion` resets the counter so the next run performs a full 5 cm.
 - The PI loop retains the soft-start and anti-windup logic, so steady-state normal-force error remains below the sensor bias even while sliding or when the surface height varies.
 - If `(F·n̂)` drops below the disengage threshold for `N` cycles the node zeroes velocity commands, enters `FAULT`, and logs `CONTACT_LOST`. Other FAULT causes include TF lookup failures, Jacobian ill-conditioning, NaNs, or limit saturation; `set_start_pose` is always required to recover.
 - TF `contact_frame` should show the Z-axis following the corrected surface normal and the X-axis pointing along the commanded tangential direction—use it (or RViz) to confirm the probe stays aligned during the 5 cm traverse.
