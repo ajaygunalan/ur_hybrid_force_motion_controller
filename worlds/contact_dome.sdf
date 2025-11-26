@@ -67,7 +67,13 @@
           </geometry>
           <surface>
             <contact>
-              <ode/>
+              <!-- Soften contact to behave like a spring-damper (F ≈ kp*x - kd*xdot) -->
+              <ode>
+                <!-- Lower stiffness to reduce 0→260 N spikes on first contact -->
+                <kp>20000.0</kp>
+                <kd>50.0</kd>
+                <min_depth>0.001</min_depth>
+              </ode>
             </contact>
             <friction>
               <ode>

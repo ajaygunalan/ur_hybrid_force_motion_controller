@@ -371,7 +371,7 @@ class URHFMCRerunViz(Node):
                 positions = np.stack(self._tcp_positions, axis=0)
                 rr.log(
                     "world/tcp_path",
-                    rr.LineStrips3D(positions=[positions], colors=[[200, 200, 200, 255]]),
+                    rr.LineStrips3D([positions], colors=[[200, 200, 200, 255]]),
                 )
         except TransformException:
             pass
@@ -431,15 +431,28 @@ def main() -> None:
         ur_sim_share = get_package_share_directory("ur_simulation_gz")
         urdf_xacro = os.path.join(ur_sim_share, "urdf", "ur_gz.urdf.xacro")
         tmp_urdf = "/tmp/ur_gz_rerun.urdf"
-        if not os.path.exists(tmp_urdf):
+
+        regenerate = True
+        if os.path.exists(tmp_urdf):
+            try:
+                if os.path.getsize(tmp_urdf) > 0:
+                    regenerate = False
+            except OSError:
+                regenerate = True
+
+        if regenerate:
             ur_type = "ur5e"
+            # Match the arguments used in ur_sim_control.launch.py enough to
+            # satisfy xacro's expectations (name is required in some macros).
             cmd = [
                 "xacro",
                 urdf_xacro,
                 f"ur_type:={ur_type}",
+                "name:=ur",
             ]
             with open(tmp_urdf, "w") as f:
                 subprocess.run(cmd, check=True, stdout=f)
+
         rr.log_file_from_path(tmp_urdf, entity_path_prefix="world")
     except Exception as e:
         print(f"[WARN] Failed to load URDF into Rerun: {e}")

@@ -14,12 +14,18 @@ hybrid_force_motion_controller:
 
     dwell_time_s: 1.0
 
+    # Explicit force-loop gains (override legacy.normal.* if set)
+    # PD(+small I) on normal force error with strong damping.
+    force_kd: 5.0
+
     normal:
       target_N: 5.0
-      tolerance_N: 0.2
-      kp: 0.6
-      ki: 4.0
-      max_velocity_mps: 0.01
+      # Force control (normal direction) – tuned to behave like a damped
+      # impedance-style PD loop as in De Luca, slide 19.
+      tolerance_N: 1.0         # force band where we consider "on target"
+      kp: 0.0005               # P gain: v_n ≈ kp * (F_d - F_s)
+      ki: 0.0005               # tiny integral, gated in code to |error|<=tolerance_N & in_contact
+      max_velocity_mps: 0.001  # |v_n| saturation, very gentle approach/contact
       softstart_time_s: 0.7
 
     disengage_force_threshold_N: 2.0
